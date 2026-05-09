@@ -24,6 +24,7 @@ import SupplierDashboard from './pages/SupplierDashboard';
 import AddVehicle from './pages/AddVehicle';
 import SupplierInventory from './pages/SupplierInventory';
 import SupplierOrders from './pages/SupplierOrders';
+import SupplierOrdersManagement from './pages/SupplierOrdersManagement';
 import SupplierCustomers from './pages/SupplierCustomers';
 import SupplierSubscription from './pages/SupplierSubscription';
 import SupplierTeam from './pages/SupplierTeam';
@@ -199,6 +200,11 @@ export default function App() {
         <Route path="supplier/orders" element={
           <ProtectedRoute allowedRoles={['foreign_bond_user']}>
             <SupplierOrders />
+          </ProtectedRoute>
+        } />
+        <Route path="supplier/orders-received" element={
+          <ProtectedRoute allowedRoles={['foreign_bond_user']}>
+            <SupplierOrdersManagement />
           </ProtectedRoute>
         } />
         <Route path="supplier/customers" element={

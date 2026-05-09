@@ -183,11 +183,245 @@ function calculateSubscriptionEndDate(months) {
   return endDate;
 }
 
+/**
+ * Create or update customer in Flutterwave
+ * @param {Object} customer - Customer details
+ * @returns {Object} Customer data with flw_id
+ */
+async function createOrUpdateCustomer(customer) {
+  try {
+    const { email, name, phone, company_name } = customer;
+    
+    const response = await axios.post(
+      `${FLUTTERWAVE_BASE_URL}/customers`,
+      {
+        email: email,
+        name: name || company_name,
+        phone_number: phone || '',
+        meta: {
+          company: company_name,
+          account_type: 'dealership'
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${FLUTTERWAVE_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return {
+      success: true,
+      customer_id: response.data.data.id,
+      email: response.data.data.email
+    };
+  } catch (error) {
+    console.error('Error creating customer:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.message || 'Customer creation failed'
+    };
+  }
+}
+
+/**
+ * Create a subscription plan
+ * @param {Object} plan - Plan configuration
+ * @returns {Object} Plan details with plan_id
+ */
+async function createSubscriptionPlan(plan) {
+  try {
+    const { name, amount, duration = 12, interval = 'monthly' } = plan;
+    
+    // Convert to kobo (smallest unit)
+    const amountInKobo = amount * 100;
+    
+    const response = await axios.post(
+      `${FLUTTERWAVE_BASE_URL}/plans`,
+      {
+        amount: amountInKobo,
+        name: name,
+        interval: interval,
+        duration: duration
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${FLUTTERWAVE_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    return {
+      success: true,
+      plan_id: response.data.data.id,
+      plan_name: response.data.data.name
+    };
+  } catch (error) {
+    console.error('Error creating plan:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.message || 'Plan creation failed'
+    };
+  }
+}
+
+/**
+ * Get subscription status
+ * @param {string} subscription_id - Flutterwave subscription ID
+ * @returns {Object} Subscription details
+ */
+async function getSubscriptionStatus(subscription_id) {
+  try {
+    const response = await axios.get(
+      `${FLUTTERWAVE_BASE_URL}/subscriptions/${subscription_id}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${FLUTTERWAVE_SECRET_KEY}`
+        }
+      }
+    );
+
+    const sub = response.data.data;
+    
+    return {
+      success: true,
+      subscription_id: sub.id,
+      status: sub.status,
+      plan_id: sub.plan,
+      customer_email: sub.customer.email,
+      next_payment_date: sub.next_payment_date,
+      amount: sub.amount / 100,
+      created_at: sub.created_at
+    };
+  } catch (error) {
+    console.error('Error fetching subscription:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: 'Failed to fetch subscription status'
+    };
+  }
+}
+
+/**
+ * Cancel a subscription
+ * @param {string} subscription_id - Flutterwave subscription ID
+ * @returns {Object} Cancellation result
+ */
+async function cancelSubscription(subscription_id) {
+  try {
+    const response = await axios.put(
+      `${FLUTTERWAVE_BASE_URL}/subscriptions/${subscription_id}/cancel`,
+      {},
+      {
+        headers: {
+          'Authorization': `Bearer ${FLUTTERWAVE_SECRET_KEY}`
+        }
+      }
+    );
+
+    return {
+      success: response.data.status === 'success',
+      message: response.data.message,
+      subscription_id: subscription_id
+    };
+  } catch (error) {
+    console.error('Error cancelling subscription:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.message || 'Cancellation failed'
+    };
+  }
+}
+
+/**
+ * Verify webhook signature from Flutterwave
+ * @param {string} signature - Signature from request headers
+ * @param {string} body - Raw request body
+ * @returns {boolean} Whether signature is valid
+ */
+function verifyWebhookSignature(signature, body) {
+  try {
+    const crypto = require('crypto');
+    const WEBHOOK_SECRET = process.env.FLW_WEBHOOK_SECRET || 'webhook_secret';
+    
+    const hash = crypto
+      .createHmac('sha256', WEBHOOK_SECRET)
+      .update(body)
+      .digest('hex');
+
+    return hash === signature;
+  } catch (error) {
+    console.error('Error verifying webhook:', error.message);
+    return false;
+  }
+}
+
+/**
+ * Handle webhook event from Flutterwave
+ * @param {Object} event - Webhook event data
+ * @returns {Object} Processing result
+ */
+function handleWebhookEvent(event) {
+  try {
+    const eventType = event.type || event.event;
+    
+    console.log(`Flutterwave webhook: ${eventType}`);
+
+    switch (eventType) {
+      case 'charge.completed':
+        return {
+          processed: true,
+          type: 'payment_success',
+          reference: event.data.tx_ref,
+          amount: event.data.amount,
+          customer_email: event.data.customer.email
+        };
+        
+      case 'charge.failed':
+        return {
+          processed: true,
+          type: 'payment_failed',
+          reference: event.data.tx_ref,
+          reason: event.data.failure_reason
+        };
+        
+      default:
+        return {
+          processed: false,
+          reason: 'Unhandled event type'
+        };
+    }
+  } catch (error) {
+    console.error('Error handling webhook:', error.message);
+    return {
+      processed: false,
+      error: error.message
+    };
+  }
+}
+
 module.exports = {
+  // Payment processing
   initiateMobileMoneyPayment,
   initiateCardPayment,
   verifyPayment,
-  getPublicKey,
+  
+  // Customer management
+  createOrUpdateCustomer,
+  
+  // Subscription management
+  createSubscriptionPlan,
+  getSubscriptionStatus,
+  cancelSubscription,
   calculateSubscriptionEndDate,
-  PLAN_PRICES
+  
+  // Webhook handling
+  verifyWebhookSignature,
+  handleWebhookEvent,
+  
+  // Constants
+  PLAN_PRICES,
+  getPublicKey
 };

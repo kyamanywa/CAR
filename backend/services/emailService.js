@@ -109,7 +109,56 @@ const templates = {
       <p>Thank you for your business!</p>
     `
   }),
+  orderConfirmedBySupplier: (order, supplier, dealership) => ({
+    subject: `Order Confirmed by Supplier: ${order.order_number}`,
+    html: `
+      <h2>Order Confirmed by Supplier! ✅</h2>
+      <p>Dear ${dealership.name},</p>
+      <p>Great news! Supplier <strong>${supplier.company_name}</strong> has confirmed your order <strong>${order.order_number}</strong>.</p>
+      <p><strong>Order Details:</strong></p>
+      <ul>
+        <li>Total Vehicles: ${order.vehicle_count}</li>
+        <li>Total Amount: $${order.total_amount_usd}</li>
+        <li>Status: ${order.order_status}</li>
+      </ul>
+      <p>Your order is being prepared for shipment. You'll receive shipping details soon.</p>
+    `
+  }),
 
+  supplierOrderReceived: (order, dealership, supplier) => ({
+    subject: `New Order Received: ${order.order_number}`,
+    html: `
+      <h2>New Order Received! 🛒</h2>
+      <p>Dear ${supplier.company_name},</p>
+      <p>You have received a new order from <strong>${dealership.name}</strong>!</p>
+      <p><strong>Order Details:</strong></p>
+      <ul>
+        <li>Order Number: ${order.order_number}</li>
+        <li>Total Vehicles: ${order.vehicle_count}</li>
+        <li>Total Amount: $${order.total_amount_usd}</li>
+        <li>Dealership: ${dealership.name}</li>
+        <li>Location: ${dealership.city}, ${dealership.country}</li>
+      </ul>
+      <p><strong>Next Steps:</strong></p>
+      <ol>
+        <li>Review the order in your dashboard</li>
+        <li>Confirm or reject within 48 hours</li>
+        <li>Once confirmed, prepare for shipment</li>
+      </ol>
+      <p>Action required! Please log in to your dashboard to review this order.</p>
+    `
+  }),
+
+  supplierOrderRejected: (order, supplier, dealership, reason) => ({
+    subject: `Order Rejected: ${order.order_number}`,
+    html: `
+      <h2>Order Rejected</h2>
+      <p>Dear ${dealership.name},</p>
+      <p>Unfortunately, your order <strong>${order.order_number}</strong> has been rejected by ${supplier.company_name}.</p>
+      ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ''}
+      <p>Please contact the supplier directly for more information or consider placing a new order.</p>
+    `
+  }),
   subscriptionExpiring: (dealership, daysLeft) => ({
     subject: `Subscription Expiring in ${daysLeft} Days`,
     html: `
@@ -161,6 +210,16 @@ module.exports = {
   
   sendOrderDelivered: (order, dealership, email) => 
     sendEmail(email, 'orderDelivered', { order, dealership }),
+
+  // Supplier notifications
+  sendOrderConfirmedBySupplier: (order, supplier, dealership, email) =>
+    sendEmail(email, 'orderConfirmedBySupplier', { order, supplier, dealership }),
+
+  sendSupplierOrderReceived: (order, dealership, supplier, email) =>
+    sendEmail(email, 'supplierOrderReceived', { order, dealership, supplier }),
+
+  sendSupplierOrderRejected: (order, supplier, dealership, email, reason) =>
+    sendEmail(email, 'supplierOrderRejected', { order, supplier, dealership, reason }),
   
   sendSubscriptionExpiring: (dealership, daysLeft, email) => 
     sendEmail(email, 'subscriptionExpiring', { dealership, daysLeft })

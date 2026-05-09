@@ -158,6 +158,23 @@ router.post('/', auth, bondFilter, checkOrderLimit, async (req, res) => {
       await db.saveDb();
     }
 
+    // Send notifications to supplier and dealership
+    try {
+      // Get supplier and dealership details for email
+      const supplierResult = await db.query('SELECT * FROM foreign_bonds WHERE id = $1', [foreign_bond_id]);
+      const dealershipResult = await db.query('SELECT * FROM dealerships WHERE id = $1', [dealership_id]);
+      const userResult = await db.query('SELECT email FROM users WHERE id = $1', [req.user.id]);
+      
+      if (supplierResult.rows[0] && userResult.rows[0]) {
+        const supplier = supplierResult.rows[0];
+        const dealership = dealershipResult.rows[0];
+        // Notify supplier of new order
+        emailService.sendSupplierOrderReceived(order, dealership, supplier, supplier.contact_email || supplier.email);
+      }
+    } catch (emailError) {
+      console.log('Email notification failed (non-critical):', emailError.message);
+    }
+
     res.status(201).json({ data: order });
   } catch (error) {
     console.error('Error:', error);
@@ -374,6 +391,21 @@ router.patch('/:id/confirm', auth, async (req, res) => {
     
     // Save database changes
     await db.saveDb();
+
+    // Send confirmation email to dealership
+    try {
+      const dealershipResult = await db.query('SELECT * FROM dealerships WHERE id = $1', [order.dealership_id]);
+      const supplierResult = await db.query('SELECT * FROM foreign_bonds WHERE id = $1', [order.foreign_bond_id]);
+      const dealershipEmail = await db.query('SELECT email FROM users WHERE dealership_id = $1 LIMIT 1', [order.dealership_id]);
+      
+      if (dealershipResult.rows[0] && supplierResult.rows[0] && dealershipEmail.rows[0]) {
+        const dealership = dealershipResult.rows[0];
+        const supplier = supplierResult.rows[0];
+        emailService.sendOrderConfirmedBySupplier(order, supplier, dealership, dealershipEmail.rows[0].email);
+      }
+    } catch (emailError) {
+      console.log('Email notification failed (non-critical):', emailError.message);
+    }
     
     res.json({ data: result.rows[0], message: 'Order confirmed and inventory updated' });
   } catch (error) {

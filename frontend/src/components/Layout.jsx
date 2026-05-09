@@ -22,7 +22,8 @@ const getNavItems = (userRole, accountType) => {
     
     // All can view orders and customers
     baseItems.push(
-      { path: '/supplier/orders', icon: ShoppingCart, label: 'Orders', accountTypes: ['owner', 'manager', 'viewer'] },
+      { path: '/supplier/orders-received', icon: ShoppingCart, label: 'Orders Received', accountTypes: ['owner', 'manager', 'viewer'] },
+      { path: '/supplier/orders', icon: Car, label: 'Browse Vehicles', accountTypes: ['owner', 'manager', 'viewer'] },
       { path: '/supplier/customers', icon: Users, label: 'Customers', accountTypes: ['owner', 'manager', 'viewer'] },
     );
     
