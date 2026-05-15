@@ -7,12 +7,16 @@ const bondFilter = require('../middleware/bondFilter');
 // Get all border clearances
 router.get('/', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access subscriber operational clearance data' });
+    }
+
     const { status, border_point } = req.query;
     let query = `
       SELECT bc.*, io.order_number, s.bl_number, s.container_number,
         fb.name as foreign_bond_name, fb.country as origin_country,
         d.name as dealership_name,
-        (SELECT COUNT(*) FROM order_vehicles ov WHERE ov.order_id = bc.order_id) as vehicle_count
+        (SELECT COALESCE(SUM(ov.quantity), 0) FROM order_vehicles ov WHERE ov.order_id = bc.order_id) as vehicle_count
       FROM border_clearance bc
       JOIN import_orders io ON bc.order_id = io.id
       JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
@@ -26,6 +30,12 @@ router.get('/', auth, bondFilter, async (req, res) => {
     if (req.isDealershipManager) {
       params.push(req.bondId);
       query += ` AND d.id = $${params.length}`;
+    }
+
+    // Foreign bond (supplier) filter - only see their own clearances
+    if (req.isForeignBondUser) {
+      params.push(req.foreignBondId);
+      query += ` AND fb.id = $${params.length}`;
     }
     
     if (status) {
@@ -49,9 +59,14 @@ router.get('/', auth, bondFilter, async (req, res) => {
 // Get clearance by ID
 router.get('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access subscriber operational clearance data' });
+    }
+
     const result = await db.query(`
       SELECT bc.*, io.order_number,
-        fb.name as foreign_bond_name, d.name as dealership_name,
+        fb.id as foreign_bond_id, fb.name as foreign_bond_name,
+        d.id as dealership_id, d.name as dealership_name,
         vt.total_tax_ugx, vt.import_duty_ugx, vt.vat_ugx
       FROM border_clearance bc
       JOIN import_orders io ON bc.order_id = io.id
@@ -64,7 +79,16 @@ router.get('/:id', auth, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Clearance not found' });
     }
-    res.json({ data: result.rows[0] });
+
+    const clearance = result.rows[0];
+    if (req.user.role === 'dealership_manager' && req.user.dealership_id !== clearance.dealership_id) {
+      return res.status(403).json({ error: 'Access denied to this clearance record' });
+    }
+    if (req.user.role === 'foreign_bond_user' && req.user.foreign_bond_id !== clearance.foreign_bond_id) {
+      return res.status(403).json({ error: 'Access denied to this clearance record' });
+    }
+
+    res.json({ data: clearance });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -73,6 +97,10 @@ router.get('/:id', auth, async (req, res) => {
 // Get summary by border point
 router.get('/summary/by-border', auth, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access subscriber operational clearance data' });
+    }
+
     const result = db.query(`
       SELECT border_point, 
         COUNT(*) as total,
@@ -92,7 +120,19 @@ router.get('/summary/by-border', auth, async (req, res) => {
 // Create border clearance
 router.post('/', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can create border clearance records' });
+    }
+
     const { order_id, border_point, ura_declaration_number } = req.body;
+
+    const orderCheck = await db.query('SELECT id, foreign_bond_id FROM import_orders WHERE id = $1', [order_id]);
+    if (orderCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    if (orderCheck.rows[0].foreign_bond_id !== req.user.foreign_bond_id) {
+      return res.status(403).json({ error: 'You can only create clearance records for your own orders' });
+    }
     
     const result = await db.query(
       `INSERT INTO border_clearance (order_id, border_point, ura_declaration_number, clearance_status)
@@ -113,6 +153,26 @@ router.post('/', auth, async (req, res) => {
 // Update clearance status
 router.patch('/:id/status', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can update border clearance status' });
+    }
+
+    const ownershipCheck = await db.query(
+      `SELECT bc.id, io.foreign_bond_id
+       FROM border_clearance bc
+       JOIN import_orders io ON io.id = bc.order_id
+       WHERE bc.id = $1`,
+      [req.params.id]
+    );
+
+    if (ownershipCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Clearance not found' });
+    }
+
+    if (ownershipCheck.rows[0].foreign_bond_id !== req.user.foreign_bond_id) {
+      return res.status(403).json({ error: 'You can only update your own clearance records' });
+    }
+
     const { status, customs_cleared_date, inspection_date, release_date, notes } = req.body;
     
     let updates = ['clearance_status = $1', 'updated_at = NOW()'];

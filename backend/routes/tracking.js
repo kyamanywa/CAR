@@ -3,11 +3,32 @@ const router = express.Router();
 const db = require('../db');
 const auth = require('../middleware/auth');
 
+async function getOrderForAccess(orderId) {
+  const result = await db.query(
+    'SELECT id, foreign_bond_id, dealership_id FROM import_orders WHERE id = $1',
+    [orderId]
+  );
+  return result.rows[0] || null;
+}
+
+function canAccessOrder(req, order) {
+  if (!order) return false;
+  if (req.user.role === 'admin') return false;
+  if (req.user.role === 'foreign_bond_user') return order.foreign_bond_id === req.user.foreign_bond_id;
+  if (req.user.role === 'dealership_manager') return order.dealership_id === req.user.dealership_id;
+  return false;
+}
+
 // Get tracking events for an order
 router.get('/order/:orderId', auth, async (req, res) => {
   try {
+    const order = await getOrderForAccess(req.params.orderId);
+    if (!canAccessOrder(req, order)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const result = await db.query(`
-      SELECT te.*, u.name as created_by_name
+      SELECT te.*, u.full_name as created_by_name
       FROM tracking_events te
       LEFT JOIN users u ON te.created_by = u.id
       WHERE te.order_id = $1
@@ -24,6 +45,10 @@ router.get('/order/:orderId', auth, async (req, res) => {
 // Add tracking event
 router.post('/', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can add tracking events' });
+    }
+
     const { 
       order_id, 
       event_type, 
@@ -56,6 +81,11 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ 
         error: `Invalid event_type. Must be one of: ${validEventTypes.join(', ')}` 
       });
+    }
+
+    const order = await getOrderForAccess(order_id);
+    if (!canAccessOrder(req, order)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
     
     // Insert tracking event
@@ -128,6 +158,20 @@ router.post('/', auth, async (req, res) => {
 // Update tracking event
 router.patch('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can update tracking events' });
+    }
+
+    const eventResult = await db.query('SELECT order_id FROM tracking_events WHERE id = $1', [req.params.id]);
+    if (eventResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Tracking event not found' });
+    }
+
+    const order = await getOrderForAccess(eventResult.rows[0].order_id);
+    if (!canAccessOrder(req, order)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const { location, description, event_date, latitude, longitude, notes } = req.body;
     
     const updates = [];
@@ -185,6 +229,20 @@ router.patch('/:id', auth, async (req, res) => {
 // Delete tracking event
 router.delete('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can delete tracking events' });
+    }
+
+    const eventResult = await db.query('SELECT order_id FROM tracking_events WHERE id = $1', [req.params.id]);
+    if (eventResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Tracking event not found' });
+    }
+
+    const order = await getOrderForAccess(eventResult.rows[0].order_id);
+    if (!canAccessOrder(req, order)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const result = await db.query('DELETE FROM tracking_events WHERE id = $1', [req.params.id]);
     
     if (result.changes === 0) {
@@ -201,8 +259,13 @@ router.delete('/:id', auth, async (req, res) => {
 // Get tracking timeline for an order (formatted for UI)
 router.get('/order/:orderId/timeline', auth, async (req, res) => {
   try {
+    const order = await getOrderForAccess(req.params.orderId);
+    if (!canAccessOrder(req, order)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const events = await db.query(`
-      SELECT te.*, u.name as created_by_name
+      SELECT te.*, u.full_name as created_by_name
       FROM tracking_events te
       LEFT JOIN users u ON te.created_by = u.id
       WHERE te.order_id = $1
@@ -231,6 +294,53 @@ router.get('/order/:orderId/timeline', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching timeline:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// PUBLIC: Get order tracking by reference number (no auth required)
+router.get('/public/:reference', async (req, res) => {
+  try {
+    const { reference } = req.params;
+    const rawDb = db.getDb();
+
+    // Find order by reference number
+    const orderResult = rawDb.exec(`
+      SELECT io.id, io.order_reference, io.order_status, io.current_location, io.last_tracking_update,
+             io.created_at, io.expected_delivery_date,
+             d.name as dealership_name,
+             fb.company_name as supplier_name,
+             v.make, v.model, v.year, v.color, v.chassis_number
+      FROM import_orders io
+      LEFT JOIN dealerships d ON io.dealership_id = d.id
+      LEFT JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
+      LEFT JOIN vehicles v ON io.vehicle_id = v.id
+      WHERE io.order_reference = '${reference.replace(/'/g, "''")}'
+      LIMIT 1
+    `);
+
+    if (!orderResult[0]?.values?.length) {
+      return res.status(404).json({ error: 'Order not found. Please check your reference number.' });
+    }
+
+    const cols = orderResult[0].columns;
+    const order = Object.fromEntries(cols.map((c, i) => [c, orderResult[0].values[0][i]]));
+
+    // Get tracking events
+    const eventsResult = rawDb.exec(`
+      SELECT event_type, location, description, event_date, notes
+      FROM tracking_events
+      WHERE order_id = ${order.id}
+      ORDER BY event_date ASC, created_at ASC
+    `);
+    const eCols = eventsResult[0]?.columns || [];
+    const events = (eventsResult[0]?.values || []).map(r =>
+      Object.fromEntries(eCols.map((c, i) => [c, r[i]]))
+    );
+
+    res.json({ data: { order, events } });
+  } catch (error) {
+    console.error('Error fetching public tracking:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getBorderClearances, getBorderSummary, getBorderClearance } from '../api';
 import { Shield, MapPin, FileCheck, X, Check, Clock, AlertCircle, Truck } from 'lucide-react';
+import { formatCurrency } from '../utils/currencyUtils';
 
 const BORDER_POINTS = ['Malaba', 'Busia', 'Mutukula', 'Katuna', 'Elegu'];
 
@@ -24,6 +25,7 @@ export default function BorderClearance() {
   const [selectedClearance, setSelectedClearance] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState(null);
+  const formatLocalMoney = (value) => formatCurrency(value, 'local_sales');
 
   useEffect(() => {
     fetchData();
@@ -280,10 +282,10 @@ export default function BorderClearance() {
                     <div className="p-4 bg-yellow-50 rounded-lg">
                       <h3 className="font-semibold mb-2">Tax Information</h3>
                       <div className="grid grid-cols-2 gap-2 text-sm">
-                        <p><span className="text-gray-600">Import Duty:</span> UGX {detail.import_duty_ugx?.toLocaleString()}</p>
-                        <p><span className="text-gray-600">VAT:</span> UGX {detail.vat_ugx?.toLocaleString()}</p>
+                        <p><span className="text-gray-600">Import Duty:</span> {formatLocalMoney(detail.import_duty_ugx)}</p>
+                        <p><span className="text-gray-600">VAT:</span> {formatLocalMoney(detail.vat_ugx)}</p>
                         <p className="col-span-2 font-medium pt-2 border-t">
-                          Total Tax: UGX {detail.total_tax_ugx?.toLocaleString()}
+                          Total Tax: {formatLocalMoney(detail.total_tax_ugx)}
                         </p>
                       </div>
                     </div>

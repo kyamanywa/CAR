@@ -1,26 +1,27 @@
 const db = require('../db');
 
-// Subscription plan limits
-const PLAN_LIMITS = {
-  starter: {
-    max_vehicles: 50,
-    max_orders: 20,
-    max_users: 3,
-    price: 49
-  },
-  professional: {
-    max_vehicles: 200,
-    max_orders: 100,
-    max_users: 10,
-    price: 199
-  },
-  enterprise: {
-    max_vehicles: 999999, // Unlimited
-    max_orders: 999999,
-    max_users: 999999,
-    price: 499
-  }
-};
+// Fallback limits used only when no plan is found in subscription_plans table
+const FALLBACK_LIMITS = { max_vehicles: 50, max_orders: 20, max_users: 3 };
+
+async function getPlanLimits(planName, targetType) {
+  try {
+    const result = await db.query(
+      `SELECT max_vehicles, max_users, max_orders_per_month FROM subscription_plans
+       WHERE LOWER(name) = LOWER($1) AND LOWER(target_user_type) = LOWER($2) AND status = 'active'
+       LIMIT 1`,
+      [planName || '', targetType || 'dealership']
+    );
+    if (result.rows.length > 0) {
+      const r = result.rows[0];
+      return {
+        max_vehicles: r.max_vehicles || FALLBACK_LIMITS.max_vehicles,
+        max_orders: r.max_orders_per_month || FALLBACK_LIMITS.max_orders,
+        max_users: r.max_users || FALLBACK_LIMITS.max_users,
+      };
+    }
+  } catch (_) {}
+  return FALLBACK_LIMITS;
+}
 
 // Check if dealership can add more vehicles
 async function checkVehicleLimit(req, res, next) {
@@ -41,15 +42,15 @@ async function checkVehicleLimit(req, res, next) {
 
     const { subscription_plan, subscription_status } = dealershipQuery.rows[0];
 
-    // Check if subscription is active
-    if (subscription_status !== 'active') {
+    // Check if subscription is active (case-insensitive)
+    if (subscription_status?.toLowerCase() !== 'active') {
       return res.status(403).json({ 
         error: 'Subscription inactive. Please renew your subscription to continue.',
         subscription_status 
       });
     }
 
-    const plan = PLAN_LIMITS[subscription_plan] || PLAN_LIMITS.starter;
+    const plan = await getPlanLimits(subscription_plan, 'dealership');
 
     // Count current vehicles
     const countQuery = await db.query(
@@ -104,15 +105,15 @@ async function checkOrderLimit(req, res, next) {
 
     const { subscription_plan, subscription_status } = dealershipQuery.rows[0];
 
-    // Check if subscription is active
-    if (subscription_status !== 'active') {
+    // Check if subscription is active (case-insensitive)
+    if (subscription_status?.toLowerCase() !== 'active') {
       return res.status(403).json({ 
         error: 'Subscription inactive. Please renew your subscription to continue.',
         subscription_status 
       });
     }
 
-    const plan = PLAN_LIMITS[subscription_plan] || PLAN_LIMITS.starter;
+    const plan = await getPlanLimits(subscription_plan, 'dealership');
 
     // Count current orders (last 30 days)
     const countQuery = await db.query(
@@ -169,15 +170,15 @@ async function checkUserLimit(req, res, next) {
 
     const { subscription_plan, subscription_status } = dealershipQuery.rows[0];
 
-    // Check if subscription is active
-    if (subscription_status !== 'active') {
+    // Check if subscription is active (case-insensitive)
+    if (subscription_status?.toLowerCase() !== 'active') {
       return res.status(403).json({ 
         error: 'Subscription inactive',
         subscription_status 
       });
     }
 
-    const plan = PLAN_LIMITS[subscription_plan] || PLAN_LIMITS.starter;
+    const plan = await getPlanLimits(subscription_plan, 'dealership');
 
     // Count current team members
     const countQuery = await db.query(
@@ -213,8 +214,8 @@ async function getUsageStats(dealershipId) {
       [dealershipId]
     );
 
-    const subscription_plan = dealershipQuery.rows[0]?.subscription_plan || 'starter';
-    const plan = PLAN_LIMITS[subscription_plan];
+    const subscription_plan = dealershipQuery.rows[0]?.subscription_plan || 'Starter';
+    const plan = await getPlanLimits(subscription_plan, 'dealership');
 
     // Get vehicle count
     const vehicleCount = await db.query(
@@ -264,5 +265,4 @@ module.exports = {
   checkOrderLimit,
   checkUserLimit,
   getUsageStats,
-  PLAN_LIMITS
 };

@@ -1,30 +1,51 @@
 import { useState, useEffect } from 'react';
-import { Users, UserPlus, Mail, Shield, Eye, Settings2, CheckCircle, XCircle, Trash2, Clock, Plus } from 'lucide-react';
-import { getTeamMembers, getPendingInvitations, inviteTeamMember, createTeamMember, updateTeamMember, removeTeamMember, cancelInvitation } from '../api';
+import { Users, UserPlus, Mail, Shield, Eye, Settings2, CheckCircle, XCircle, Trash2, Clock, Plus, KeyRound, X, DollarSign } from 'lucide-react';
+import { getTeamMembers, getPendingInvitations, inviteTeamMember, createTeamMember, updateTeamMember, resetTeamMemberPassword, removeTeamMember, cancelInvitation } from '../api';
+import { useAuth } from '../AuthContext';
 
 export default function SupplierTeam() {
+  const { user } = useAuth();
   const [members, setMembers] = useState([]);
   const [invitations, setInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [inviteForm, setInviteForm] = useState({ email: '', account_type: 'manager', name: '' });
-  const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', account_type: 'manager' });
+  const [createForm, setCreateForm] = useState({ name: '', email: '', password: '', account_type: 'manager', role: '' });
+  const [resetTarget, setResetTarget] = useState(null); // { id, full_name }
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [resetSaving, setResetSaving] = useState(false);
+
+  const isSupplier = user?.role === 'foreign_bond_user';
+  const isOwner = (user?.account_type || 'owner') === 'owner';
+  const companyTypeLabel = isSupplier ? 'Supplier' : 'Dealership';
+  const teamSubtitle = isSupplier
+    ? 'All users share: Same inventory • Same subscription • Same billing'
+    : 'All users share: Same inventory • Same orders • Same billing';
+  const defaultEmailPlaceholder = isSupplier ? 'john@tokyoauto.jp' : 'staff@kpmmotors.ug';
+  const companyAccountLabel = user?.full_name ? `${companyTypeLabel} Company Account` : `${companyTypeLabel} Account`;
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [isOwner]);
 
   const loadData = async () => {
+    setLoading(true);
     try {
-      const [membersRes, invitesRes] = await Promise.all([
-        getTeamMembers(),
-        getPendingInvitations()
-      ]);
+      const requests = [getTeamMembers()];
+      if (isOwner) {
+        requests.push(getPendingInvitations());
+      }
+
+      const [membersRes, invitesRes] = await Promise.all(requests);
       setMembers(membersRes.data.data || []);
-      setInvitations(invitesRes.data.data || []);
+      setInvitations(invitesRes?.data?.data || []);
     } catch (error) {
       console.error('Failed to load team data:', error);
+      setMembers([]);
+      setInvitations([]);
     } finally {
       setLoading(false);
     }
@@ -49,18 +70,27 @@ export default function SupplierTeam() {
       await createTeamMember(createForm);
       alert('User created successfully!');
       setShowCreateModal(false);
-      setCreateForm({ name: '', email: '', password: '', account_type: 'manager' });
+      setCreateForm({ name: '', email: '', password: '', account_type: 'manager', role: '' });
       loadData();
     } catch (error) {
       alert(error.response?.data?.error || 'Failed to create user');
     }
   };
 
+  const DEALERSHIP_ROLE_OPTIONS = [
+    { value: 'dealership_manager', label: 'Manager', desc: 'Full access' },
+    { value: 'dealership_sales', label: 'Sales', desc: 'Inventory, orders, customers, sales' },
+    { value: 'dealership_accountant', label: 'Accountant', desc: 'Financials & reports only' },
+  ];
+
   const handleUpdateRole = async (memberId, newRole) => {
     if (!confirm('Are you sure you want to change this member\'s role?')) return;
-    
     try {
-      await updateTeamMember(memberId, { account_type: newRole });
+      // For dealerships, update the actual role field; for suppliers just account_type
+      const payload = isSupplier
+        ? { account_type: newRole }
+        : { role: newRole, account_type: newRole === 'dealership_manager' ? 'manager' : 'viewer' };
+      await updateTeamMember(memberId, payload);
       alert('Role updated successfully!');
       loadData();
     } catch (error) {
@@ -95,7 +125,6 @@ export default function SupplierTeam() {
 
   const handleCancelInvite = async (inviteId) => {
     if (!confirm('Cancel this invitation?')) return;
-    
     try {
       await cancelInvitation(inviteId);
       alert('Invitation canceled!');
@@ -105,33 +134,52 @@ export default function SupplierTeam() {
     }
   };
 
-  const getRoleIcon = (accountType) => {
-    switch (accountType) {
-      case 'owner': return <Shield className="w-5 h-5 text-purple-600" />;
-      case 'manager': return <Settings2 className="w-5 h-5 text-blue-600" />;
-      case 'viewer': return <Eye className="w-5 h-5 text-gray-600" />;
-      default: return <Users className="w-5 h-5 text-gray-400" />;
+  const openResetPassword = (member) => {
+    setResetTarget(member);
+    setResetPassword('');
+    setResetConfirm('');
+    setResetError('');
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    setResetError('');
+    if (resetPassword.length < 8) { setResetError('Password must be at least 8 characters'); return; }
+    if (resetPassword !== resetConfirm) { setResetError('Passwords do not match'); return; }
+    setResetSaving(true);
+    try {
+      await resetTeamMemberPassword(resetTarget.id, resetPassword);
+      setResetTarget(null);
+      alert(`Password for ${resetTarget.full_name || resetTarget.email} has been updated.`);
+    } catch (err) {
+      setResetError(err.response?.data?.error || 'Failed to update password');
+    } finally {
+      setResetSaving(false);
     }
   };
 
-  const getRoleBadge = (accountType) => {
-    const styles = {
-      owner: 'bg-purple-100 text-purple-800',
-      manager: 'bg-blue-100 text-blue-800',
-      viewer: 'bg-gray-100 text-gray-800'
-    };
-    return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium ${styles[accountType] || styles.viewer}`}>
-        {accountType === 'owner' ? 'Owner' : accountType === 'manager' ? 'Manager' : 'Viewer'}
-      </span>
-    );
+  const getRoleDisplay = (member) => {
+    // For dealerships use the actual role field; for suppliers/owner use account_type
+    if (member.account_type === 'owner') return { label: 'Owner', color: 'bg-purple-100 text-purple-800', icon: <Shield className="w-5 h-5 text-purple-600" /> };
+    if (!isSupplier) {
+      switch (member.role) {
+        case 'dealership_manager': return { label: 'Manager', color: 'bg-blue-100 text-blue-800', icon: <Settings2 className="w-5 h-5 text-blue-600" /> };
+        case 'dealership_sales': return { label: 'Sales', color: 'bg-green-100 text-green-800', icon: <Users className="w-5 h-5 text-green-600" /> };
+        case 'dealership_accountant': return { label: 'Accountant', color: 'bg-orange-100 text-orange-800', icon: <DollarSign className="w-5 h-5 text-orange-600" /> };
+      }
+    }
+    return { label: member.account_type === 'manager' ? 'Manager' : 'Viewer', color: 'bg-gray-100 text-gray-800', icon: <Eye className="w-5 h-5 text-gray-600" /> };
+  };
+
+  const getRoleIcon = (member) => getRoleDisplay(member).icon;
+  const getRoleBadge = (member) => {
+    const { label, color } = getRoleDisplay(member);
+    return <span className={`px-2 py-1 rounded-full text-xs font-medium ${color}`}>{label}</span>;
   };
 
   if (loading) {
     return <div className="flex justify-center items-center h-64">Loading team...</div>;
   }
-
-  const isOwner = true; // TODO: Get from AuthContext
 
   return (
     <div className="space-y-6">
@@ -139,9 +187,9 @@ export default function SupplierTeam() {
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold text-blue-900">Tokyo Auto Exports Account</h2>
+            <h2 className="text-xl font-bold text-blue-900">{companyAccountLabel}</h2>
             <p className="text-blue-700 mt-1">ONE Company Account → {members.length} User{members.length !== 1 ? 's' : ''}</p>
-            <p className="text-sm text-blue-600 mt-2">All users share: Same inventory • Same subscription • Same billing</p>
+            <p className="text-sm text-blue-600 mt-2">{teamSubtitle}</p>
           </div>
           <div className="text-right">
             <div className="text-3xl font-bold text-blue-900">{members.length}</div>
@@ -194,10 +242,10 @@ export default function SupplierTeam() {
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                      {getRoleIcon(member.account_type)}
+                      {getRoleIcon(member)}
                     </div>
                     <div>
-                      <div className="font-semibold">{member.name}</div>
+                      <div className="font-semibold">{member.full_name || member.email}</div>
                       <div className="text-sm text-gray-600">{member.email}</div>
                     </div>
                   </div>
@@ -205,15 +253,20 @@ export default function SupplierTeam() {
                 <td className="px-6 py-4">
                   {isOwner && member.account_type !== 'owner' ? (
                     <select
-                      value={member.account_type}
+                      value={isSupplier ? member.account_type : (member.role || 'dealership_manager')}
                       onChange={(e) => handleUpdateRole(member.id, e.target.value)}
                       className="border rounded px-2 py-1 text-sm"
                     >
-                      <option value="manager">Manager</option>
-                      <option value="viewer">Viewer</option>
+                      {isSupplier ? (
+                        <option value="manager">Manager</option>
+                      ) : (
+                        DEALERSHIP_ROLE_OPTIONS.map(r => (
+                          <option key={r.value} value={r.value}>{r.label} — {r.desc}</option>
+                        ))
+                      )}
                     </select>
                   ) : (
-                    getRoleBadge(member.account_type)
+                    getRoleBadge(member)
                   )}
                 </td>
                 <td className="px-6 py-4">
@@ -232,7 +285,14 @@ export default function SupplierTeam() {
                 {isOwner && (
                   <td className="px-6 py-4 text-right">
                     {member.account_type !== 'owner' && (
-                      <div className="flex justify-end gap-2">
+                      <div className="flex justify-end gap-2 flex-wrap">
+                        <button
+                          onClick={() => openResetPassword(member)}
+                          className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 border border-purple-200"
+                          title="Reset password"
+                        >
+                          <KeyRound className="w-3 h-3" /> Reset PW
+                        </button>
                         <button
                           onClick={() => handleToggleActive(member.id, member.is_active)}
                           className="text-sm text-blue-600 hover:text-blue-800"
@@ -289,48 +349,117 @@ export default function SupplierTeam() {
       {/* Role Permissions Guide */}
       <div className="bg-blue-50 rounded-lg p-6">
         <h3 className="text-lg font-bold mb-4">Role Permissions</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Shield className="w-5 h-5 text-purple-600" />
-              <h4 className="font-semibold">Owner</h4>
+        {isSupplier ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Shield className="w-5 h-5 text-purple-600" /><h4 className="font-semibold">Owner</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Full access — subscription, billing, team</li>
+                <li>• Manage vehicles & orders</li>
+                <li>• All reports & analytics</li>
+              </ul>
             </div>
-            <ul className="text-sm text-gray-700 space-y-1">
-              <li>• Full system access</li>
-              <li>• Manage subscription</li>
-              <li>• Invite/remove team members</li>
-              <li>• Manage vehicles & orders</li>
-              <li>• View all reports</li>
-            </ul>
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Settings2 className="w-5 h-5 text-blue-600" /><h4 className="font-semibold">Manager</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Add/edit vehicles</li>
+                <li>• Manage orders & shipping</li>
+                <li>• View analytics</li>
+                <li>• Cannot manage billing or team</li>
+              </ul>
+            </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Settings2 className="w-5 h-5 text-blue-600" />
-              <h4 className="font-semibold">Manager</h4>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Shield className="w-5 h-5 text-purple-600" /><h4 className="font-semibold">Owner</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Full system access</li>
+                <li>• Subscription & billing</li>
+                <li>• Add/remove team members</li>
+                <li>• All pages</li>
+              </ul>
             </div>
-            <ul className="text-sm text-gray-700 space-y-1">
-              <li>• Add/edit vehicles</li>
-              <li>• Manage orders</li>
-              <li>• View customers</li>
-              <li>• View analytics</li>
-              <li>• Cannot manage billing or team</li>
-            </ul>
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Settings2 className="w-5 h-5 text-blue-600" /><h4 className="font-semibold">Manager</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Inventory, orders, shipping</li>
+                <li>• Border clearance</li>
+                <li>• Sales, customers, loans</li>
+                <li>• Reports, financials, analytics</li>
+                <li>• Team & company profile</li>
+              </ul>
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-2"><Users className="w-5 h-5 text-green-600" /><h4 className="font-semibold">Sales</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Inventory (view & edit)</li>
+                <li>• Orders & shipping</li>
+                <li>• Sales & customers</li>
+                <li>• Inspections & analytics</li>
+                <li>• No financials/reports</li>
+              </ul>
+            </div>
+            <div>
+              <div className="flex items-center gap-2 mb-2"><DollarSign className="w-5 h-5 text-orange-600" /><h4 className="font-semibold">Accountant</h4></div>
+              <ul className="text-sm text-gray-700 space-y-1">
+                <li>• Sales & customers</li>
+                <li>• Reports & financials</li>
+                <li>• Loan management</li>
+                <li>• Analytics</li>
+                <li>• No inventory editing</li>
+              </ul>
+            </div>
           </div>
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Eye className="w-5 h-5 text-gray-600" />
-              <h4 className="font-semibold">Viewer</h4>
+        )}
+      </div>
+
+      {/* Reset Password Modal */}
+      {resetTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-gray-900">Reset Password</h3>
+                <p className="mt-0.5 text-sm text-gray-500">{resetTarget.full_name || resetTarget.email}</p>
+              </div>
+              <button onClick={() => setResetTarget(null)} className="rounded-lg p-1 text-gray-400 hover:bg-gray-100"><X className="h-5 w-5" /></button>
             </div>
-            <ul className="text-sm text-gray-700 space-y-1">
-              <li>• View inventory</li>
-              <li>• View orders</li>
-              <li>• View dashboard</li>
-              <li>• Cannot add or edit</li>
-              <li>• Read-only access</li>
-            </ul>
+            {resetError && <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{resetError}</div>}
+            <form onSubmit={handleResetPassword} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">New Password</label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={resetPassword}
+                  onChange={e => setResetPassword(e.target.value)}
+                  placeholder="Minimum 8 characters"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Confirm Password</label>
+                <input
+                  type="password"
+                  required
+                  value={resetConfirm}
+                  onChange={e => setResetConfirm(e.target.value)}
+                  placeholder="Repeat new password"
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="flex justify-end gap-3 pt-2">
+                <button type="button" onClick={() => setResetTarget(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</button>
+                <button type="submit" disabled={resetSaving} className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-60">
+                  {resetSaving ? 'Saving…' : 'Set New Password'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Create User Modal */}
       {showCreateModal && (
@@ -358,7 +487,7 @@ export default function SupplierTeam() {
                   value={createForm.email}
                   onChange={(e) => setCreateForm({...createForm, email: e.target.value})}
                   className="w-full border rounded-lg px-3 py-2"
-                  placeholder="john@tokyoauto.jp"
+                  placeholder={defaultEmailPlaceholder}
                 />
               </div>
               <div>
@@ -374,17 +503,33 @@ export default function SupplierTeam() {
                 />
               </div>
               
-              <div>
-                <label className="block text-sm font-medium mb-1">Role</label>
-                <select
-                  value={createForm.account_type}
-                  onChange={(e) => setCreateForm({...createForm, account_type: e.target.value})}
-                  className="w-full border rounded-lg px-3 py-2"
-                >
-                  <option value="manager">Manager - Can add/edit vehicles and manage orders</option>
-                  <option value="viewer">Viewer - Read-only access</option>
-                </select>
-              </div>
+              {isSupplier ? (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Role</label>
+                  <select
+                    value={createForm.account_type}
+                    onChange={(e) => setCreateForm({...createForm, account_type: e.target.value})}
+                    className="w-full border rounded-lg px-3 py-2"
+                  >
+                    <option value="manager">Manager — Manage vehicles & orders</option>
+                    <option value="viewer">Viewer — Read-only access</option>
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Role</label>
+                  <select
+                    value={createForm.role}
+                    onChange={(e) => setCreateForm({...createForm, role: e.target.value, account_type: e.target.value === 'dealership_manager' ? 'manager' : 'viewer'})}
+                    className="w-full border rounded-lg px-3 py-2"
+                  >
+                    <option value="dealership_manager">Manager — Full access (inventory, orders, reports, team)</option>
+                    <option value="dealership_sales">Sales — Inventory, orders, sales & customers</option>
+                    <option value="dealership_accountant">Accountant — Financials, reports & loans only</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">Controls which pages this user can access</p>
+                </div>
+              )}
 
               <div className="flex gap-3 pt-4">
                 <button
@@ -424,17 +569,32 @@ export default function SupplierTeam() {
                 />
               </div>
               
-              <div>
-                <label className="block text-sm font-medium mb-1">Role</label>
-                <select
-                  value={inviteForm.account_type}
-                  onChange={(e) => setInviteForm({...inviteForm, account_type: e.target.value})}
-                  className="w-full border rounded-lg px-3 py-2"
-                >
-                  <option value="manager">Manager - Can add/edit vehicles and manage orders</option>
-                  <option value="viewer">Viewer - Read-only access</option>
-                </select>
-              </div>
+              {isSupplier ? (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Role</label>
+                  <select
+                    value={inviteForm.account_type}
+                    onChange={(e) => setInviteForm({...inviteForm, account_type: e.target.value})}
+                    className="w-full border rounded-lg px-3 py-2"
+                  >
+                    <option value="manager">Manager — Manage vehicles & orders</option>
+                    <option value="viewer">Viewer — Read-only access</option>
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium mb-1">Role</label>
+                  <select
+                    value={inviteForm.account_type}
+                    onChange={(e) => setInviteForm({...inviteForm, account_type: e.target.value})}
+                    className="w-full border rounded-lg px-3 py-2"
+                  >
+                    <option value="dealership_manager">Manager — Full access</option>
+                    <option value="dealership_sales">Sales — Inventory, orders, sales & customers</option>
+                    <option value="dealership_accountant">Accountant — Financials & reports only</option>
+                  </select>
+                </div>
+              )}
 
               <div className="flex gap-3 pt-4">
                 <button

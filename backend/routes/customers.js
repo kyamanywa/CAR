@@ -7,6 +7,10 @@ const bondFilter = require('../middleware/bondFilter');
 // Get all customers (bond-filtered)
 router.get('/', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant customers' });
+    }
+
     let whereClause = '';
     const params = [];
     
@@ -37,6 +41,10 @@ router.get('/', auth, bondFilter, async (req, res) => {
 // Get single customer
 router.get('/:id', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant customers' });
+    }
+
     const { id } = req.params;
     let whereClause = 'WHERE c.id = $1';
     const params = [id];
@@ -81,6 +89,10 @@ router.get('/:id', auth, bondFilter, async (req, res) => {
 // Create customer (automatically linked to dealership for dealership managers)
 router.post('/', auth, bondFilter, async (req, res) => {
   try {
+    if (!req.isDealershipManager) {
+      return res.status(403).json({ error: 'Only dealership users can create customers' });
+    }
+
     const { full_name, phone, email, national_id, address } = req.body;
     
     // For dealership managers, automatically assign to their dealership
@@ -108,6 +120,10 @@ router.post('/', auth, bondFilter, async (req, res) => {
 // Update customer
 router.put('/:id', auth, bondFilter, async (req, res) => {
   try {
+    if (!req.isDealershipManager) {
+      return res.status(403).json({ error: 'Only dealership users can update customers' });
+    }
+
     const { id } = req.params;
     const { full_name, phone, email, national_id, address } = req.body;
     
@@ -138,6 +154,10 @@ router.put('/:id', auth, bondFilter, async (req, res) => {
 // Delete customer
 router.delete('/:id', auth, bondFilter, async (req, res) => {
   try {
+    if (!req.isDealershipManager) {
+      return res.status(403).json({ error: 'Only dealership users can delete customers' });
+    }
+
     const { id } = req.params;
     
     // Check ownership for dealership managers

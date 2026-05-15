@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { getUgandanBonds, getUgandanBondVehicles, getUgandanBondOrders, getUgandanBondDashboard, getBondUsers } from '../api';
-import { Building2, MapPin, Car, Package, TrendingUp, X, Plus, Users as UsersIcon, Calendar, CheckCircle, XCircle, Globe } from 'lucide-react';
+import { Building2, MapPin, Car, Package, TrendingUp, X, Plus, Users as UsersIcon, Calendar, CheckCircle, XCircle, Globe, DollarSign } from 'lucide-react';
 import api from '../api';
 import { countries } from '../data/countries';
+import { useCurrency } from '../CurrencyContext';
 
 export default function Dealerships() {
   const [bonds, setBonds] = useState([]);
@@ -15,6 +16,7 @@ export default function Dealerships() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [showCreateUserPrompt, setShowCreateUserPrompt] = useState(false);
   const [newlyCreatedDealership, setNewlyCreatedDealership] = useState(null);
+  const { formatUGX, formatUSD } = useCurrency();
   const [newBond, setNewBond] = useState({
     name: '',
     country: '',
@@ -364,26 +366,101 @@ export default function Dealerships() {
               ) : (
                 <>
                   {activeTab === 'overview' && bondData.dashboard && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 rounded-lg">
-                        <Car className="w-8 h-8 mb-2 opacity-80" />
-                        <div className="text-2xl font-bold">{bondData.dashboard.vehicles?.total || 0}</div>
-                        <div className="text-sm opacity-90">Total Vehicles</div>
+                    <div className="space-y-6">
+                      {/* Volume stats */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 rounded-lg">
+                          <Car className="w-8 h-8 mb-2 opacity-80" />
+                          <div className="text-2xl font-bold">{bondData.dashboard.inventory?.in_stock || 0}</div>
+                          <div className="text-sm opacity-90">In Stock</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-green-500 to-green-600 text-white p-6 rounded-lg">
+                          <CheckCircle className="w-8 h-8 mb-2 opacity-80" />
+                          <div className="text-2xl font-bold">{bondData.dashboard.inventory?.in_transit || 0}</div>
+                          <div className="text-sm opacity-90">In Transit</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-orange-500 to-orange-600 text-white p-6 rounded-lg">
+                          <Package className="w-8 h-8 mb-2 opacity-80" />
+                          <div className="text-2xl font-bold">{bondData.dashboard.orders?.pending || 0}</div>
+                          <div className="text-sm opacity-90">Pending Orders</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-6 rounded-lg">
+                          <TrendingUp className="w-8 h-8 mb-2 opacity-80" />
+                          <div className="text-2xl font-bold">{bondData.dashboard.sales?.total_sales || 0}</div>
+                          <div className="text-sm opacity-90">Total Sales</div>
+                        </div>
                       </div>
-                      <div className="bg-gradient-to-br from-green-500 to-green-600 text-white p-6 rounded-lg">
-                        <CheckCircle className="w-8 h-8 mb-2 opacity-80" />
-                        <div className="text-2xl font-bold">{bondData.dashboard.vehicles?.in_stock || 0}</div>
-                        <div className="text-sm opacity-90">In Stock</div>
+
+                      {/* Inventory Value Breakdown */}
+                      <div>
+                        <h3 className="text-base font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                          <DollarSign className="w-4 h-4 text-green-600" />
+                          Inventory Value
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Imported vehicles */}
+                          <div className="border rounded-xl p-5 bg-blue-50">
+                            <div className="text-sm font-semibold text-blue-700 mb-3">📦 Imported Vehicles (in stock)</div>
+                            <div className="space-y-2">
+                              <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Units</span>
+                                <span className="font-bold text-gray-800">{bondData.dashboard.imported_value?.total_units || 0}</span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Cost Value (USD)</span>
+                                <span className="font-bold text-blue-700">{formatUSD(bondData.dashboard.imported_value?.stock_value_usd || 0)}</span>
+                              </div>
+                              <div className="flex justify-between text-sm border-t pt-2 mt-2">
+                                <span className="text-gray-600">Asking Value (UGX)</span>
+                                <span className="font-bold text-green-700">{formatUGX(bondData.dashboard.imported_value?.asking_value_ugx || 0)}</span>
+                              </div>
+                            </div>
+                          </div>
+                          {/* Local vehicles */}
+                          <div className="border rounded-xl p-5 bg-green-50">
+                            <div className="text-sm font-semibold text-green-700 mb-3">🏠 Local Inventory (in stock)</div>
+                            <div className="space-y-2">
+                              <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Units</span>
+                                <span className="font-bold text-gray-800">{bondData.dashboard.local_value?.total_units || 0}</span>
+                              </div>
+                              <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Acquisition Cost</span>
+                                <span className="font-bold text-blue-700">{formatUGX(bondData.dashboard.local_value?.cost_value_ugx || 0)}</span>
+                              </div>
+                              <div className="flex justify-between text-sm border-t pt-2 mt-2">
+                                <span className="text-gray-600">Asking Value</span>
+                                <span className="font-bold text-green-700">{formatUGX(bondData.dashboard.local_value?.asking_value_ugx || 0)}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        {/* Combined total */}
+                        <div className="mt-3 rounded-xl border bg-gray-900 text-white p-4 flex justify-between items-center">
+                          <span className="text-sm font-medium">Combined Asking Value (both inventories)</span>
+                          <span className="text-lg font-bold text-green-400">
+                            {formatUGX((Number(bondData.dashboard.imported_value?.asking_value_ugx) || 0) + (Number(bondData.dashboard.local_value?.asking_value_ugx) || 0))}
+                          </span>
+                        </div>
                       </div>
-                      <div className="bg-gradient-to-br from-orange-500 to-orange-600 text-white p-6 rounded-lg">
-                        <Package className="w-8 h-8 mb-2 opacity-80" />
-                        <div className="text-2xl font-bold">{bondData.dashboard.orders?.total || 0}</div>
-                        <div className="text-sm opacity-90">Import Orders</div>
-                      </div>
-                      <div className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-6 rounded-lg">
-                        <TrendingUp className="w-8 h-8 mb-2 opacity-80" />
-                        <div className="text-2xl font-bold">{bondData.dashboard.sales?.total_sales || 0}</div>
-                        <div className="text-sm opacity-90">Total Sales</div>
+
+                      {/* Sales performance */}
+                      <div className="border rounded-xl p-5">
+                        <div className="text-sm font-semibold text-gray-700 mb-3">📈 Sales Performance</div>
+                        <div className="grid grid-cols-3 gap-4">
+                          <div>
+                            <div className="text-xs text-gray-500">Total Revenue</div>
+                            <div className="font-bold text-green-700">{formatUGX(bondData.dashboard.sales?.total_revenue || 0)}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500">Gross Profit</div>
+                            <div className="font-bold text-blue-700">{formatUGX(bondData.dashboard.sales?.total_profit || 0)}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500">Vehicles Sold</div>
+                            <div className="font-bold text-gray-800">{bondData.dashboard.sales?.total_sales || 0}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -398,15 +475,31 @@ export default function Dealerships() {
                               <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Chassis</th>
                               <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Make/Model</th>
                               <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Year</th>
+                              <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Color</th>
+                              <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Mileage (km)</th>
+                              <th className="px-4 py-3 text-right text-sm font-medium text-gray-600">Acquisition Cost (UGX)</th>
+                              <th className="px-4 py-3 text-right text-sm font-medium text-gray-600">Sale Price (UGX)</th>
                               <th className="px-4 py-3 text-left text-sm font-medium text-gray-600">Status</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y">
                             {bondData.vehicles.map((vehicle) => (
                               <tr key={vehicle.id}>
-                                <td className="px-4 py-3 text-sm">{vehicle.chassis_number}</td>
+                                <td className="px-4 py-3 text-sm font-mono">{vehicle.chassis_number}</td>
                                 <td className="px-4 py-3 text-sm">{vehicle.make} {vehicle.model}</td>
                                 <td className="px-4 py-3 text-sm">{vehicle.year}</td>
+                                <td className="px-4 py-3 text-sm">{vehicle.color || '-'}</td>
+                                <td className="px-4 py-3 text-sm">{vehicle.mileage ? Number(vehicle.mileage).toLocaleString() : '-'}</td>
+                                <td className="px-4 py-3 text-sm text-right">
+                                  {vehicle.acquisition_cost_ugx
+                                    ? 'UGX ' + Number(vehicle.acquisition_cost_ugx).toLocaleString()
+                                    : '-'}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-right font-medium text-green-700">
+                                  {vehicle.sale_price_ugx
+                                    ? 'UGX ' + Number(vehicle.sale_price_ugx).toLocaleString()
+                                    : '-'}
+                                </td>
                                 <td className="px-4 py-3 text-sm">
                                   <span className={`px-2 py-1 rounded-full text-xs ${
                                     vehicle.status === 'In Stock' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'

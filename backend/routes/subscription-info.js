@@ -2,101 +2,131 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
+const LEGACY_PLAN_LIMITS = {
+  'free trial': { max_vehicles: 50, max_users: 3, max_orders_per_month: 20 },
+  starter: { max_vehicles: 50, max_users: 3, max_orders_per_month: 20 },
+  professional: { max_vehicles: 200, max_users: 10, max_orders_per_month: 100 },
+  enterprise: { max_vehicles: 999999, max_users: 999999, max_orders_per_month: 999999 }
+};
+
+function toInt(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+async function tableExists(tableName) {
+  const result = await db.query(
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = $1 LIMIT 1`,
+    [tableName]
+  );
+  return result.rows.length > 0;
+}
+
 // Get current subscription and usage
 router.get('/my-subscription', async (req, res) => {
   try {
     const organizationId = req.user.foreign_bond_id || req.user.dealership_id;
     const subscriberType = req.user.foreign_bond_id ? 'supplier' : 'dealership';
     const organizationField = req.user.foreign_bond_id ? 'foreign_bond_id' : 'dealership_id';
-    
-    // Get subscription
-    const subResult = await db.query(
-      `SELECT s.*, p.name as plan_name, p.price_monthly, p.price_yearly, 
-              p.max_vehicles, p.max_users, p.max_orders_per_month, p.features
-       FROM subscriptions s
-       JOIN subscription_plans p ON s.plan_id = p.id
-       WHERE s.subscriber_id = $1 AND s.subscriber_type = $2 
-         AND s.status IN ('active', 'trial', 'past_due')
-       ORDER BY s.id DESC LIMIT 1`,
-      [organizationId, subscriberType]
+    const organizationTable = req.user.foreign_bond_id ? 'foreign_bonds' : 'dealerships';
+
+    if (!organizationId) {
+      return res.status(400).json({ error: 'No organization is linked to this user' });
+    }
+
+    // Get current usage first (works even when subscription tables are not present)
+    const vehicleCount = await db.query(
+      `SELECT COUNT(*) as count FROM vehicles WHERE ${organizationField} = $1`,
+      [organizationId]
     );
-    
-    let subscription = null;
-    let usage = {
-      vehicles: 0,
-      users: 0,
-      orders_this_month: 0
+
+    const userCount = await db.query(
+      `SELECT COUNT(*) as count FROM users WHERE ${organizationField} = $1 AND is_active = 1`,
+      [organizationId]
+    );
+
+    const firstDayOfMonth = new Date();
+    firstDayOfMonth.setDate(1);
+    firstDayOfMonth.setHours(0, 0, 0, 0);
+
+    const orderCountMonth = await db.query(
+      `SELECT COUNT(*) as count FROM import_orders 
+       WHERE ${organizationField} = $1 
+         AND created_at >= $2`,
+      [organizationId, firstDayOfMonth.toISOString()]
+    );
+
+    const totalOrderCount = await db.query(
+      `SELECT COUNT(*) as count FROM import_orders WHERE ${organizationField} = $1`,
+      [organizationId]
+    );
+
+    const usage = {
+      vehicles: toInt(vehicleCount.rows[0]?.count),
+      users: toInt(userCount.rows[0]?.count),
+      orders_this_month: toInt(orderCountMonth.rows[0]?.count),
+      orders_total: toInt(totalOrderCount.rows[0]?.count)
     };
+
+    // Legacy subscription fields stored on organization tables.
+    const legacyOrg = await db.query(
+      `SELECT * FROM ${organizationTable} WHERE id = $1`,
+      [organizationId]
+    );
+
+    const legacyPlanName = legacyOrg.rows[0]?.subscription_plan || 'Free Trial';
+    const legacyStatus = (legacyOrg.rows[0]?.subscription_status || 'Active').toLowerCase();
+    const legacyLimits = LEGACY_PLAN_LIMITS[legacyPlanName.toLowerCase()] || LEGACY_PLAN_LIMITS.starter;
     
-    if (subResult.rows.length > 0) {
-      subscription = subResult.rows[0];
-      
-      // Get current usage
-      const vehicleCount = await db.query(
-        `SELECT COUNT(*) as count FROM vehicles WHERE ${organizationField} = $1`,
-        [organizationId]
+    // Prefer subscription-system tables when available, but gracefully fallback.
+    let subscription = null;
+    const hasSubscriptionTables = (await tableExists('subscriptions')) && (await tableExists('subscription_plans'));
+    if (hasSubscriptionTables) {
+      const subResult = await db.query(
+        `SELECT s.*, p.name as plan_name, p.price_monthly, p.price_yearly, 
+                p.max_vehicles, p.max_users, p.max_orders_per_month, p.features
+         FROM subscriptions s
+         JOIN subscription_plans p ON s.plan_id = p.id
+         WHERE s.subscriber_id = $1 AND s.subscriber_type = $2 
+           AND s.status IN ('active', 'trial', 'past_due')
+         ORDER BY s.id DESC LIMIT 1`,
+        [organizationId, subscriberType]
       );
-      
-      const userCount = await db.query(
-        `SELECT COUNT(*) as count FROM users WHERE ${organizationField} = $1 AND is_active = 1`,
-        [organizationId]
-      );
-      
-      // Orders this month (for suppliers: orders FROM buyers; for dealerships: orders TO suppliers)
-      const firstDayOfMonth = new Date();
-      firstDayOfMonth.setDate(1);
-      firstDayOfMonth.setHours(0, 0, 0, 0);
-      
-      const orderCount = await db.query(
-        `SELECT COUNT(*) as count FROM import_orders 
-         WHERE ${organizationField} = $1 
-           AND created_at >= $2`,
-        [organizationId, firstDayOfMonth.toISOString()]
-      );
-      
-      usage = {
-        vehicles: vehicleCount.rows[0].count,
-        users: userCount.rows[0].count,
-        orders_this_month: orderCount.rows[0].count
-      };
-      
-      // Parse features if it's a string
-      if (subscription.features && typeof subscription.features === 'string') {
-        try {
-          subscription.features = JSON.parse(subscription.features);
-        } catch (e) {
-          subscription.features = [];
+
+      if (subResult.rows.length > 0) {
+        subscription = subResult.rows[0];
+
+        if (subscription.features && typeof subscription.features === 'string') {
+          try {
+            subscription.features = JSON.parse(subscription.features);
+          } catch (e) {
+            subscription.features = [];
+          }
         }
       }
     } else {
-      // No subscription found - return free tier info
+      console.warn('Subscription tables unavailable, falling back to legacy organization subscription fields');
+    }
+
+    if (!subscription) {
       subscription = {
-        status: 'none',
-        plan_name: 'No Subscription',
-        message: 'Subscribe to unlock full features',
-        max_vehicles: 5,
-        max_users: 1,
-        max_orders_per_month: 10
-      };
-      
-      // Still calculate usage
-      const vehicleCount = await db.query(
-        `SELECT COUNT(*) as count FROM vehicles WHERE ${organizationField} = $1`,
-        [organizationId]
-      );
-      
-      const userCount = await db.query(
-        `SELECT COUNT(*) as count FROM users WHERE ${organizationField} = $1 AND is_active = 1`,
-        [organizationId]
-      );
-      
-      usage = {
-        vehicles: vehicleCount.rows[0].count,
-        users: userCount.rows[0].count,
-        orders_this_month: 0
+        status: legacyStatus,
+        plan_name: legacyPlanName,
+        current_period_start: legacyOrg.rows[0]?.subscription_start_date || null,
+        current_period_end: legacyOrg.rows[0]?.subscription_end_date || null,
+        max_vehicles: legacyLimits.max_vehicles,
+        max_users: legacyLimits.max_users,
+        max_orders_per_month: legacyLimits.max_orders_per_month,
+        message: 'Using organization subscription settings'
       };
     }
-    
+
+    const limits = {
+      vehicles: toInt(subscription.max_vehicles) || legacyLimits.max_vehicles,
+      users: toInt(subscription.max_users) || legacyLimits.max_users,
+      orders: toInt(subscription.max_orders_per_month) || legacyLimits.max_orders_per_month
+    };
+
     // Calculate days remaining
     let daysRemaining = null;
     if (subscription.current_period_end) {
@@ -109,15 +139,11 @@ router.get('/my-subscription', async (req, res) => {
       subscription,
       usage,
       daysRemaining,
-      limits: {
-        vehicles: subscription.max_vehicles,
-        users: subscription.max_users,
-        orders: subscription.max_orders_per_month
-      },
+      limits,
       isLimitReached: {
-        vehicles: usage.vehicles >= subscription.max_vehicles,
-        users: usage.users >= subscription.max_users,
-        orders: usage.orders_this_month >= subscription.max_orders_per_month
+        vehicles: usage.vehicles >= limits.vehicles,
+        users: usage.users >= limits.users,
+        orders: usage.orders_this_month >= limits.orders
       }
     });
   } catch (error) {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { getMyOrders, getMakes, getModels, getVehicles, updateVehicleImage, confirmOrder, updateOrderStatus } from '../api';
-import { Package, ChevronDown, ChevronRight, Image as ImageIcon, Upload, CheckCircle, Truck } from 'lucide-react';
+import { Package, ChevronDown, ChevronRight, Image as ImageIcon, Upload, CheckCircle, Truck, Printer, X } from 'lucide-react';
+import PrintableInvoice from '../components/PrintableInvoice';
 
 export default function SupplierOrders() {
   const [orders, setOrders] = useState([]);
@@ -13,6 +14,8 @@ export default function SupplierOrders() {
   const [loading, setLoading] = useState(true);
   const [vehiclesLoading, setVehiclesLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(null);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [showPrintable, setShowPrintable] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -216,6 +219,16 @@ export default function SupplierOrders() {
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedOrder(order);
+                          setShowPrintable(true);
+                        }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-purple-500 text-white rounded hover:bg-purple-600 text-xs font-medium"
+                      >
+                        <Printer className="w-4 h-4" />
+                        Print
+                      </button>
                       {order.status?.toLowerCase() === 'pending' && (
                         <button
                           onClick={() => handleConfirmOrder(order.id)}
@@ -451,6 +464,22 @@ export default function SupplierOrders() {
           )}
         </div>
       </div>
+
+      {/* Printable Invoice Modal */}
+      {showPrintable && selectedOrder && (
+        <PrintableInvoice
+          invoice={{
+            order_number: selectedOrder.order_number,
+            created_at: selectedOrder.order_date,
+            counterparty_name: selectedOrder.dealership_name || selectedOrder.bond_name || 'N/A',
+            total_amount_usd: selectedOrder.total_value || 0,
+            units: selectedOrder.vehicle_count || 0,
+            order_status: selectedOrder.status
+          }}
+          type="order"
+          onClose={() => setShowPrintable(false)}
+        />
+      )}
     </div>
   );
 }

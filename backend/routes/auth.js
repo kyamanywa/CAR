@@ -44,6 +44,7 @@ router.post('/login', async (req, res) => {
           id: user.id,
           email: user.email,
           full_name: user.full_name,
+          account_type: user.account_type,
           role: user.role,
           dealership_id: user.dealership_id,
           foreign_bond_id: user.foreign_bond_id
@@ -56,14 +57,59 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get current user
+// Get current user (full profile)
 router.get('/me', auth, async (req, res) => {
   try {
     const result = await db.query(
-      'SELECT id, email, full_name, role, dealership_id, foreign_bond_id FROM users WHERE id = $1',
+      `SELECT u.id, u.email, u.full_name, u.account_type, u.role,
+              u.dealership_id, u.foreign_bond_id, u.phone, u.position, u.profile_notes,
+              u.created_at,
+              d.name as dealership_name, d.address as dealership_address, d.contact_phone as dealership_phone
+       FROM users u
+       LEFT JOIN dealerships d ON u.dealership_id = d.id
+       WHERE u.id = $1`,
       [req.user.id]
     );
     res.json({ data: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update own profile
+router.patch('/me', auth, async (req, res) => {
+  try {
+    const { full_name, phone, position, profile_notes } = req.body;
+    await db.query(
+      `UPDATE users SET full_name=$1, phone=$2, position=$3, profile_notes=$4 WHERE id=$5`,
+      [full_name || null, phone || null, position || null, profile_notes || null, req.user.id]
+    );
+    await db.saveDb();
+    res.json({ message: 'Profile updated' });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Change own password
+router.patch('/me/password', auth, async (req, res) => {
+  try {
+    const { current_password, new_password } = req.body;
+    if (!current_password || !new_password)
+      return res.status(400).json({ error: 'current_password and new_password required' });
+    if (new_password.length < 6)
+      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+
+    const result = await db.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+    const user = result.rows[0];
+    const bcrypt = require('bcryptjs');
+    const valid = await bcrypt.compare(current_password, user.password_hash);
+    if (!valid) return res.status(400).json({ error: 'Current password is incorrect' });
+
+    const hashed = await bcrypt.hash(new_password, 10);
+    await db.query('UPDATE users SET password_hash=$1 WHERE id=$2', [hashed, req.user.id]);
+    await db.saveDb();
+    res.json({ message: 'Password changed successfully' });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }

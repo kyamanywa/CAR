@@ -3,10 +3,16 @@ const router = express.Router();
 const db = require('../db');
 const auth = require('../middleware/auth');
 const bondFilter = require('../middleware/bondFilter');
+const { getUsdToUgxRate } = require('../config/currency');
+const auditLog = require('../middleware/auditLog');
 
 // Get all local sales
 router.get('/', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant sales data' });
+    }
+
     const { payment_status } = req.query;
     
     let whereClause = 'WHERE 1=1';
@@ -50,6 +56,10 @@ router.get('/', auth, bondFilter, async (req, res) => {
 // Get sale by ID
 router.get('/:id', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant sales data' });
+    }
+
     let whereClause = 'WHERE ls.id = $1';
     const params = [req.params.id];
     
@@ -86,6 +96,10 @@ router.get('/:id', auth, bondFilter, async (req, res) => {
 // Get sales stats
 router.get('/stats/summary', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant sales data' });
+    }
+
     const { period } = req.query;
     let dateFilter = '';
     
@@ -128,12 +142,22 @@ router.get('/stats/summary', auth, bondFilter, async (req, res) => {
 });
 
 // Create sale
-router.post('/', auth, bondFilter, async (req, res) => {
+router.post('/', auth, bondFilter, auditLog('local_sales'), async (req, res) => {
   try {
+    if (!req.isDealershipManager) {
+      return res.status(403).json({ error: 'Only dealership users can create sales' });
+    }
+
     const { 
       vehicle_id, customer_id, 
-      selling_price_ugx, amount_paid_ugx, payment_method, notes
+      selling_price_ugx, amount_paid_ugx, notes,
+      discount_ugx, trade_in_vehicle, trade_in_value_ugx, salesperson_name,
+      quantity
     } = req.body;
+
+    if (!vehicle_id || !customer_id || selling_price_ugx == null) {
+      return res.status(400).json({ error: 'vehicle_id, customer_id and selling_price_ugx are required' });
+    }
     
     // Get dealership_id from authenticated user
     const dealership_id = req.isDealershipManager ? req.bondId : req.body.dealership_id;
@@ -142,9 +166,9 @@ router.post('/', auth, bondFilter, async (req, res) => {
       return res.status(400).json({ error: 'dealership_id is required' });
     }
     
-    // Get vehicle cost
+    // Get vehicle cost and quantity
     const vehicleResult = await db.query(
-      'SELECT total_cost_ugx, status, dealership_id FROM vehicles WHERE id = $1',
+      'SELECT purchase_price_usd, status, dealership_id, quantity FROM vehicles WHERE id = $1',
       [vehicle_id]
     );
     
@@ -153,39 +177,65 @@ router.post('/', auth, bondFilter, async (req, res) => {
     }
     
     const vehicle = vehicleResult.rows[0];
+    const vehicleDealershipId = vehicle.dealership_id != null ? Number(vehicle.dealership_id) : null;
+    const authDealershipId = dealership_id != null ? Number(dealership_id) : null;
     
     // Check vehicle belongs to this dealership and is available
-    if (vehicle.dealership_id !== dealership_id) {
+    if (vehicleDealershipId !== authDealershipId) {
       return res.status(403).json({ error: 'Vehicle does not belong to your dealership' });
     }
     
-    if (vehicle.status !== 'In Stock') {
+    const AVAILABLE_STATUSES = ['In Stock', 'Available'];
+    if (!AVAILABLE_STATUSES.includes(vehicle.status)) {
       return res.status(400).json({ error: 'Vehicle is not available for sale' });
+    }
+    
+    // Check quantity
+    const saleQuantity = parseInt(quantity) || 1;
+    const currentQuantity = parseInt(vehicle.quantity) || 0;
+    
+    if (saleQuantity > currentQuantity) {
+      return res.status(400).json({ error: `Only ${currentQuantity} units available` });
     }
     
     // Generate invoice number
     const invoiceNumber = `INV-${Date.now().toString(36).toUpperCase()}`;
     
+    // Calculate totals: unit_price × quantity
+    const unitPrice = parseFloat(selling_price_ugx);
+    const totalSellingPrice = unitPrice * saleQuantity;
+    const discountAmt = parseFloat(discount_ugx) || 0;
+    const tradeInAmt = parseFloat(trade_in_value_ugx) || 0;
+    const finalPrice = totalSellingPrice - discountAmt - tradeInAmt;
+    
     // Determine payment status
     let paymentStatus = 'Pending';
-    if (amount_paid_ugx >= selling_price_ugx) paymentStatus = 'Paid';
+    if (amount_paid_ugx >= finalPrice) paymentStatus = 'Paid';
     else if (amount_paid_ugx > 0) paymentStatus = 'Partial';
+
+    // Fallback conversion so profits/stats remain usable when vehicles don't store UGX cost.
+    const totalCostUgx = (parseFloat(vehicle.purchase_price_usd) || 0) * getUsdToUgxRate() * saleQuantity;
     
     const result = await db.query(
       `INSERT INTO local_sales (
         invoice_number, vehicle_id, dealership_id, customer_id,
-        total_cost_ugx, selling_price_ugx, amount_paid_ugx, 
-        payment_status, payment_method, notes, sale_date
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP) RETURNING *`,
+        total_cost_ugx, selling_price_ugx, unit_price_ugx, amount_paid_ugx, 
+        payment_status, notes, sale_date,
+        discount_ugx, trade_in_vehicle, trade_in_value_ugx, salesperson_name, quantity
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, $11, $12, $13, $14, $15) RETURNING *`,
       [invoiceNumber, vehicle_id, dealership_id, customer_id,
-       vehicle.total_cost_ugx, selling_price_ugx, amount_paid_ugx, 
-       paymentStatus, payment_method, notes]
+       totalCostUgx, totalSellingPrice, unitPrice, amount_paid_ugx, 
+       paymentStatus, notes,
+       discountAmt, trade_in_vehicle || null, tradeInAmt, salesperson_name || null, saleQuantity]
     );
 
-    // Update vehicle status to Sold
+    // Decrease vehicle quantity
+    const newQuantity = currentQuantity - saleQuantity;
+    const newStatus = newQuantity <= 0 ? 'Sold' : vehicle.status;
+    
     await db.query(
-      'UPDATE vehicles SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['Sold', vehicle_id]
+      'UPDATE vehicles SET quantity = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+      [newQuantity, newStatus, vehicle_id]
     );
 
     res.status(201).json({ 
@@ -201,6 +251,10 @@ router.post('/', auth, bondFilter, async (req, res) => {
 // Update payment
 router.patch('/:id/payment', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'dealership_manager') {
+      return res.status(403).json({ error: 'Only dealership users can update sale payments' });
+    }
+
     const { amount_paid_ugx } = req.body;
     
     // Get current sale
@@ -210,6 +264,11 @@ router.patch('/:id/payment', auth, async (req, res) => {
     }
     
     const sale = saleResult.rows[0];
+
+    if (sale.dealership_id !== req.user.dealership_id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const newAmountPaid = parseFloat(sale.amount_paid_ugx) + parseFloat(amount_paid_ugx);
     
     let paymentStatus = 'Partial';
@@ -230,9 +289,9 @@ router.patch('/:id/payment', auth, async (req, res) => {
 // Delete sale
 router.delete('/:id', auth, bondFilter, async (req, res) => {
   try {
-    // Get sale details
+    // Get sale details including quantity
     const saleResult = await db.query(
-      'SELECT vehicle_id, dealership_id FROM local_sales WHERE id = $1',
+      'SELECT vehicle_id, dealership_id, quantity FROM local_sales WHERE id = $1',
       [req.params.id]
     );
     
@@ -241,22 +300,37 @@ router.delete('/:id', auth, bondFilter, async (req, res) => {
     }
     
     const sale = saleResult.rows[0];
+    const saleQuantity = parseInt(sale.quantity) || 1;
     
     // Check ownership for dealership managers
     if (req.isDealershipManager && sale.dealership_id !== req.bondId) {
       return res.status(403).json({ error: 'Access denied' });
     }
     
+    // Get current vehicle quantity
+    const vehicleResult = await db.query(
+      'SELECT quantity, status FROM vehicles WHERE id = $1',
+      [sale.vehicle_id]
+    );
+    
+    if (vehicleResult.rows.length > 0) {
+      const currentQuantity = parseInt(vehicleResult.rows[0].quantity) || 0;
+      const newQuantity = currentQuantity + saleQuantity;
+      
+      // If vehicle was sold out, return to available status
+      const newStatus = vehicleResult.rows[0].status === 'Sold' ? 'Available' : vehicleResult.rows[0].status;
+      
+      // Return quantity to stock
+      await db.query(
+        'UPDATE vehicles SET quantity = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+        [newQuantity, newStatus, sale.vehicle_id]
+      );
+    }
+    
     // Delete the sale
     await db.query('DELETE FROM local_sales WHERE id = $1', [req.params.id]);
     
-    // Return vehicle to stock
-    await db.query(
-      'UPDATE vehicles SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['In Stock', sale.vehicle_id]
-    );
-    
-    res.json({ message: 'Sale deleted and vehicle returned to stock' });
+    res.json({ message: 'Sale deleted and vehicle quantity returned to stock' });
   } catch (error) {
     console.error('Error deleting sale:', error);
     res.status(500).json({ error: 'Server error' });

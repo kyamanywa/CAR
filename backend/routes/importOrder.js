@@ -5,17 +5,22 @@ const auth = require('../middleware/auth');
 const bondFilter = require('../middleware/bondFilter');
 const emailService = require('../services/emailService');
 const { checkOrderLimit } = require('../middleware/usageLimits');
+const auditLog = require('../middleware/auditLog');
 
 // Get all import orders
 router.get('/', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access subscriber operational orders' });
+    }
+
     const { status, foreign_bond_id } = req.query;
     
     let query = `
       SELECT io.*, 
         fb.name as foreign_bond_name, fb.country as origin_country,
         d.name as dealership_name,
-        (SELECT COUNT(*) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count
+        (SELECT COALESCE(SUM(ov.quantity), 0) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count
       FROM import_orders io
       LEFT JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
       LEFT JOIN dealerships d ON io.dealership_id = d.id
@@ -57,6 +62,10 @@ router.get('/', auth, bondFilter, async (req, res) => {
 // Get order by ID
 router.get('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access subscriber operational orders' });
+    }
+
     const orderResult = await db.query(`
       SELECT io.*, 
         fb.name as foreign_bond_name, fb.country as origin_country,
@@ -69,6 +78,14 @@ router.get('/:id', auth, async (req, res) => {
     
     if (orderResult.rows.length === 0) {
       return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderResult.rows[0];
+    if (req.user.role === 'dealership_manager' && req.user.dealership_id !== order.dealership_id) {
+      return res.status(403).json({ error: 'Access denied to this order' });
+    }
+    if (req.user.role === 'foreign_bond_user' && req.user.foreign_bond_id !== order.foreign_bond_id) {
+      return res.status(403).json({ error: 'Access denied to this order' });
     }
 
     const vehiclesResult = await db.query(`
@@ -89,7 +106,7 @@ router.get('/:id', auth, async (req, res) => {
 
     res.json({
       data: {
-        ...orderResult.rows[0],
+        ...order,
         vehicles: vehicles,
         total_units: totalUnits,
         calculated_total_amount: totalAmount
@@ -101,8 +118,12 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 // Create import order (with usage limit check)
-router.post('/', auth, bondFilter, checkOrderLimit, async (req, res) => {
+router.post('/', auth, bondFilter, checkOrderLimit, auditLog('import_orders'), async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot create subscriber operational orders' });
+    }
+
     const { foreign_bond_id, vehicle_ids, vehicle_quantities, total_amount_usd, notes } = req.body;
     
     // Get dealership_id from authenticated user
@@ -183,9 +204,59 @@ router.post('/', auth, bondFilter, checkOrderLimit, async (req, res) => {
 });
 
 // Update order status
-router.patch('/:id/status', auth, async (req, res) => {
+router.patch('/:id/status', auth, auditLog('import_orders'), async (req, res) => {
   try {
     const { status } = req.body;
+
+    const orderCheck = await db.query(
+      'SELECT id, order_status, foreign_bond_id, dealership_id FROM import_orders WHERE id = $1',
+      [req.params.id]
+    );
+
+    if (orderCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    const order = orderCheck.rows[0];
+
+    // Enforce tenant ownership
+    if (req.user.role === 'foreign_bond_user' && req.user.foreign_bond_id !== order.foreign_bond_id) {
+      return res.status(403).json({ error: 'You can only update orders for your own supplier account' });
+    }
+
+    // Role-based permissions:
+    // - Supplier confirms with /confirm, then updates the full shipment flow.
+    // - Dealership cannot directly update order status.
+    if (req.user.role === 'dealership_manager') {
+      return res.status(403).json({
+        error: 'Dealership cannot update order status directly. Supplier updates all order statuses.'
+      });
+    }
+
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can update order status' });
+    }
+
+    const supplierAllowedStatuses = ['Shipped', 'At Border', 'Cleared', 'Delivered', 'Cancelled'];
+
+    if (req.user.role === 'foreign_bond_user' && !supplierAllowedStatuses.includes(status)) {
+      return res.status(403).json({
+        error: 'Supplier can update status to Shipped, At Border, Cleared, Delivered, or Cancelled.'
+      });
+    }
+
+    const validTransitions = {
+      Confirmed: ['Shipped', 'Cancelled'],
+      Shipped: ['At Border', 'Cancelled'],
+      'At Border': ['Cleared', 'Cancelled'],
+      Cleared: ['Delivered', 'Cancelled']
+    };
+
+    if (validTransitions[order.order_status] && !validTransitions[order.order_status].includes(status)) {
+      return res.status(400).json({
+        error: `Invalid status flow: cannot move from "${order.order_status}" to "${status}".`
+      });
+    }
     
     // VALIDATION RULES - Industry Standard
     if (status === 'At Border') {
@@ -251,26 +322,26 @@ router.patch('/:id/status', auth, async (req, res) => {
       'Shipped': 'In Transit',
       'At Border': 'At Border',
       'Cleared': 'Cleared',
-      'Delivered': 'In Stock',
-      'Completed': 'Sold'
+      'Delivered': 'In Stock'
+      // 'Completed' intentionally omitted: supplier vehicle stock is managed by quantity, not order completion status
     };
     
     // Send email notifications based on status
     try {
       const order = result.rows[0];
-      const dealershipQuery = await db.query('SELECT id, name, email FROM dealerships WHERE id = $1', [order.dealership_id]);
+      const dealershipQuery = await db.query('SELECT id, name, contact_email FROM dealerships WHERE id = $1', [order.dealership_id]);
       const dealership = dealershipQuery.rows[0];
       
-      if (dealership && dealership.email) {
+      if (dealership && dealership.contact_email) {
         if (status === 'At Border') {
           const clearanceQuery = await db.query('SELECT * FROM border_clearance WHERE order_id = $1', [order.id]);
           if (clearanceQuery.rows.length > 0) {
-            await emailService.sendOrderAtBorder(order, clearanceQuery.rows[0], dealership, dealership.email);
+            await emailService.sendOrderAtBorder(order, clearanceQuery.rows[0], dealership, dealership.contact_email);
           }
         } else if (status === 'Cleared') {
-          await emailService.sendOrderCleared(order, dealership, dealership.email);
+          await emailService.sendOrderCleared(order, dealership, dealership.contact_email);
         } else if (status === 'Delivered') {
-          await emailService.sendOrderDelivered(order, dealership, dealership.email);
+          await emailService.sendOrderDelivered(order, dealership, dealership.contact_email);
         }
       }
     } catch (emailError) {
@@ -284,25 +355,64 @@ router.patch('/:id/status', auth, async (req, res) => {
         WHERE id IN (SELECT vehicle_id FROM order_vehicles WHERE order_id = $2)
       `, [statusMap[status], req.params.id]);
     }
+
+    // On Delivered: add ordered vehicles to the dealership's inventory
+    if (status === 'Delivered') {
+      const order = result.rows[0];
+      const orderVehiclesResult = await db.query(
+        'SELECT ov.vehicle_id, ov.quantity, v.* FROM order_vehicles ov JOIN vehicles v ON v.id = ov.vehicle_id WHERE ov.order_id = $1',
+        [req.params.id]
+      );
+      for (const ov of orderVehiclesResult.rows) {
+        const orderedQty = ov.quantity || 1;
+        // Check if dealership already has a record for this exact vehicle (from a prior delivery of same order vehicle)
+        const existing = await db.query(
+          `SELECT id, quantity FROM vehicles WHERE dealership_id = $1 AND foreign_bond_id = $2 AND make = $3 AND model = $4 AND year = $5 AND color = $6 AND source_type = 'import' LIMIT 1`,
+          [order.dealership_id, ov.foreign_bond_id, ov.make, ov.model, ov.year, ov.color]
+        );
+        if (existing.rows.length > 0) {
+          // Add to existing dealership record
+          await db.query(
+            `UPDATE vehicles SET quantity = quantity + $1, status = 'In Stock', updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [orderedQty, existing.rows[0].id]
+          );
+        } else {
+          // Create new vehicle record for the dealership
+          await db.query(
+            `INSERT INTO vehicles (foreign_bond_id, dealership_id, chassis_number, make, model, year, color, engine_cc, fuel_type, transmission, body_type, mileage, purchase_price_usd, sale_price_usd, quantity, status, source_type, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'In Stock', 'import', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            [
+              ov.foreign_bond_id, order.dealership_id,
+              ov.chassis_number ? `${ov.chassis_number}-D${order.dealership_id}` : null,
+              ov.make, ov.model, ov.year, ov.color,
+              ov.engine_cc, ov.fuel_type, ov.transmission, ov.body_type,
+              ov.mileage, ov.purchase_price_usd, ov.sale_price_usd,
+              orderedQty
+            ]
+          );
+        }
+      }
+    }
     
     // Note: Shipping and border clearance records must be created manually by users
     
-    // If order is cancelled, restore inventory
+    // If order is cancelled, restore inventory using actual ordered quantity
     if (status === 'Cancelled') {
       const vehicleIds = await db.query(
-        'SELECT vehicle_id FROM order_vehicles WHERE order_id = $1',
+        'SELECT vehicle_id, quantity FROM order_vehicles WHERE order_id = $1',
         [req.params.id]
       );
       
       for (const row of vehicleIds.rows) {
+        const orderedQty = row.quantity || 1;
         await db.query(
           `UPDATE vehicles 
            SET status = 'Available', 
-               quantity = quantity + 1, 
+               quantity = quantity + $1, 
                dealership_id = NULL,
                updated_at = CURRENT_TIMESTAMP 
-           WHERE id = $1`,
-          [row.vehicle_id]
+           WHERE id = $2`,
+          [orderedQty, row.vehicle_id]
         );
       }
     }
@@ -320,6 +430,10 @@ router.patch('/:id/status', auth, async (req, res) => {
 // Confirm order (supplier action) - reduces inventory
 router.patch('/:id/confirm', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'foreign_bond_user') {
+      return res.status(403).json({ error: 'Only supplier can confirm orders' });
+    }
+
     const orderId = req.params.id;
     
     // Check order exists
@@ -336,7 +450,7 @@ router.patch('/:id/confirm', auth, async (req, res) => {
     }
     
     // Verify user is the supplier for this order
-    if (req.user.bond_id && req.user.bond_id !== order.foreign_bond_id) {
+    if (req.user.foreign_bond_id && req.user.foreign_bond_id !== order.foreign_bond_id) {
       return res.status(403).json({ error: 'You can only confirm orders for your own bond' });
     }
     
@@ -417,6 +531,10 @@ router.patch('/:id/confirm', auth, async (req, res) => {
 // Update entire order (vehicles, amount, notes)
 router.put('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'dealership_manager') {
+      return res.status(403).json({ error: 'Only dealership can edit orders' });
+    }
+
     const { vehicle_ids, vehicle_quantities, total_amount_usd, notes } = req.body;
     const orderId = req.params.id;
     
@@ -427,6 +545,10 @@ router.put('/:id', auth, async (req, res) => {
     }
     
     const order = orderResult.rows[0];
+
+    if (req.user.dealership_id !== order.dealership_id) {
+      return res.status(403).json({ error: 'You can only edit your own dealership orders' });
+    }
     
     // Only allow editing pending/confirmed orders
     if (!['Pending', 'Confirmed'].includes(order.order_status)) {
@@ -519,6 +641,10 @@ router.put('/:id', auth, async (req, res) => {
 // Delete order
 router.delete('/:id', auth, async (req, res) => {
   try {
+    if (req.user.role !== 'dealership_manager') {
+      return res.status(403).json({ error: 'Only dealership can delete orders' });
+    }
+
     const orderId = req.params.id;
     
     // Check order exists
@@ -528,6 +654,10 @@ router.delete('/:id', auth, async (req, res) => {
     }
     
     const order = orderResult.rows[0];
+
+    if (req.user.dealership_id !== order.dealership_id) {
+      return res.status(403).json({ error: 'You can only delete your own dealership orders' });
+    }
     
     // Only allow deleting pending orders
     if (order.order_status !== 'Pending') {
@@ -567,6 +697,48 @@ router.delete('/:id', auth, async (req, res) => {
     res.json({ message: 'Order deleted successfully' });
   } catch (error) {
     console.error('Error deleting order:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Record a payment against an import order (dealership pays supplier)
+router.patch('/:id/payment', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'dealership_manager') {
+      return res.status(403).json({ error: 'Only dealership can record payments on import orders' });
+    }
+
+    const orderId = req.params.id;
+    const { amount_paid_usd, payment_notes } = req.body;
+
+    if (amount_paid_usd === undefined || isNaN(Number(amount_paid_usd))) {
+      return res.status(400).json({ error: 'amount_paid_usd is required and must be a number' });
+    }
+
+    const orderResult = await db.query('SELECT * FROM import_orders WHERE id = $1', [orderId]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    const order = orderResult.rows[0];
+    if (order.dealership_id !== req.user.dealership_id) {
+      return res.status(403).json({ error: 'Access denied to this order' });
+    }
+
+    const paid = Number(amount_paid_usd);
+    const total = Number(order.total_amount_usd) || 0;
+    let payment_status = 'Unpaid';
+    if (paid >= total) payment_status = 'Paid';
+    else if (paid > 0) payment_status = 'Partial';
+
+    const result = await db.query(
+      `UPDATE import_orders SET amount_paid_usd=$1, payment_status=$2, payment_notes=$3 WHERE id=$4 RETURNING *`,
+      [paid, payment_status, payment_notes || null, orderId]
+    );
+
+    await db.saveDb();
+    res.json({ data: result.rows[0], message: 'Payment recorded successfully' });
+  } catch (error) {
+    console.error('Error recording payment:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

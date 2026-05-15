@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { CreditCard, Calendar, Users, Package, ShoppingCart, TrendingUp, AlertCircle, CheckCircle, Crown } from 'lucide-react';
 import { getMySubscription } from '../api';
+import api from '../api';
 
 export default function SupplierSubscription() {
   const [subscription, setSubscription] = useState(null);
@@ -8,10 +9,21 @@ export default function SupplierSubscription() {
   const [limits, setLimits] = useState(null);
   const [daysRemaining, setDaysRemaining] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [availablePlans, setAvailablePlans] = useState([]);
 
   useEffect(() => {
     loadSubscription();
+    loadAvailablePlans();
   }, []);
+
+  const loadAvailablePlans = async () => {
+    try {
+      const res = await api.get('/subscriptions/plans?target_user_type=supplier');
+      setAvailablePlans(res.data.data || []);
+    } catch (e) {
+      console.error('Failed to load available plans:', e);
+    }
+  };
 
   const loadSubscription = async () => {
     try {
@@ -24,6 +36,24 @@ export default function SupplierSubscription() {
       console.error('Failed to load subscription:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const [selecting, setSelecting] = useState(null); // plan id being selected
+
+  const handleSelectPlan = async (plan) => {
+    if (!confirm(`Select the "${plan.name}" plan for $${plan.price_monthly}/month?`)) return;
+    setSelecting(plan.id);
+    try {
+      await api.post('/subscriptions/subscriptions', {
+        plan_id: plan.id,
+        billing_cycle: 'monthly',
+      });
+      await loadSubscription();
+    } catch (e) {
+      alert(e.response?.data?.error || 'Failed to select plan. Please contact support.');
+    } finally {
+      setSelecting(null);
     }
   };
 
@@ -204,88 +234,71 @@ export default function SupplierSubscription() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Basic Plan */}
-          <div className="border-2 border-gray-200 rounded-lg p-6 hover:border-blue-500 transition-colors">
-            <h4 className="text-xl font-bold mb-2">Basic</h4>
-            <div className="text-3xl font-bold mb-4">$49.99<span className="text-lg text-gray-600">/mo</span></div>
-            <ul className="space-y-2 mb-6">
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Up to 50 vehicles
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                3 team members
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                50 orders/month
-              </li>
-            </ul>
-            <button 
-              disabled={!isOwner}
-              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              Select Plan
-            </button>
+        {availablePlans.length === 0 ? (
+          <p className="text-gray-500 text-sm">No plans available. Contact support.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {availablePlans.map((plan, idx) => {
+              const isPopular = idx === 1;
+              const isCurrent = subscription?.plan_name === plan.name;
+              return (
+                <div
+                  key={plan.id}
+                  className={`border-2 rounded-lg p-6 transition-colors relative ${
+                    isCurrent ? 'border-green-500 bg-green-50' :
+                    isPopular ? 'border-blue-500 bg-blue-50' :
+                    'border-gray-200 hover:border-blue-400'
+                  }`}
+                >
+                  {isPopular && !isCurrent && (
+                    <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-3 py-1 rounded-full text-xs font-bold">
+                      POPULAR
+                    </div>
+                  )}
+                  {isCurrent && (
+                    <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" /> CURRENT
+                    </div>
+                  )}
+                  <h4 className="text-xl font-bold mb-2">{plan.name}</h4>
+                  <div className="text-3xl font-bold mb-4">
+                    ${plan.price_monthly}<span className="text-lg text-gray-600">/mo</span>
+                  </div>
+                  <ul className="space-y-2 mb-6">
+                    {plan.max_vehicles && (
+                      <li className="flex items-center gap-2 text-sm">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        {plan.max_vehicles >= 999999 ? 'Unlimited vehicles' : `Up to ${plan.max_vehicles} vehicles`}
+                      </li>
+                    )}
+                    {plan.max_users && (
+                      <li className="flex items-center gap-2 text-sm">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        {plan.max_users >= 999999 ? 'Unlimited team members' : `${plan.max_users} team members`}
+                      </li>
+                    )}
+                    {plan.max_orders_per_month && (
+                      <li className="flex items-center gap-2 text-sm">
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        {plan.max_orders_per_month >= 999999 ? 'Unlimited orders/month' : `${plan.max_orders_per_month} orders/month`}
+                      </li>
+                    )}
+                    {plan.description && (
+                      <li className="text-sm text-gray-600 mt-2">{plan.description}</li>
+                    )}
+                  </ul>
+                  <button
+                    disabled={isCurrent || selecting === plan.id}
+                    onClick={() => !isCurrent && handleSelectPlan(plan)}
+                    className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {selecting === plan.id ? 'Selecting...' : isCurrent ? 'Current Plan' : 'Select Plan'}
+                  </button>
+                </div>
+              );
+            })}
           </div>
-
-          {/* Pro Plan */}
-          <div className="border-2 border-blue-500 rounded-lg p-6 relative bg-blue-50">
-            <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-blue-500 text-white px-3 py-1 rounded-full text-xs font-bold">
-              POPULAR
-            </div>
-            <h4 className="text-xl font-bold mb-2">Pro</h4>
-            <div className="text-3xl font-bold mb-4">$99.99<span className="text-lg text-gray-600">/mo</span></div>
-            <ul className="space-y-2 mb-6">
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Up to 200 vehicles
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                10 team members
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                200 orders/month
-              </li>
-            </ul>
-            <button 
-              disabled={!isOwner}
-              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              Upgrade to Pro
-            </button>
-          </div>
-
-          {/* Enterprise Plan */}
-          <div className="border-2 border-gray-200 rounded-lg p-6 hover:border-blue-500 transition-colors">
-            <h4 className="text-xl font-bold mb-2">Enterprise</h4>
-            <div className="text-3xl font-bold mb-4">$249.99<span className="text-lg text-gray-600">/mo</span></div>
-            <ul className="space-y-2 mb-6">
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Unlimited vehicles
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Unlimited team members
-              </li>
-              <li className="flex items-center gap-2 text-sm">
-                <CheckCircle className="w-4 h-4 text-green-500" />
-                Unlimited orders
-              </li>
-            </ul>
-            <button 
-              disabled={!isOwner}
-              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              Contact Sales
-            </button>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Billing Information */}

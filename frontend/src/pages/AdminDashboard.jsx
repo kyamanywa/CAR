@@ -1,15 +1,21 @@
 import { useState, useEffect } from 'react';
 import { fetchWithAuth } from '../api';
+import api from '../api';
 import { Building2, Users, DollarSign, TrendingUp, AlertCircle, CheckCircle, XCircle, Clock, Crown } from 'lucide-react';
 
 export default function AdminDashboard() {
   const [dealerships, setDealerships] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all'); // all, active, inactive, trial
+  const [filter, setFilter] = useState('all');
+  const [plans, setPlans] = useState([]); // DB plans for dropdown
 
   useEffect(() => {
     loadData();
+    // Load dealership plans from DB
+    api.get('/subscriptions/admin/plans').then(res => {
+      setPlans((res.data.data || []).filter(p => p.target_user_type === 'dealership' && p.status === 'active'));
+    }).catch(() => {});
   }, []);
 
   const loadData = async () => {
@@ -72,20 +78,20 @@ export default function AdminDashboard() {
     }
   };
 
-  const handlePlanChange = async (dealershipId, newPlan) => {
-    if (!confirm(`Are you sure you want to change subscription plan to "${newPlan}"?`)) {
-      return;
-    }
-
+  const handlePlanChange = async (dealershipId, planId) => {
+    const selectedPlan = plans.find(p => String(p.id) === String(planId));
+    if (!selectedPlan) return;
+    if (!confirm(`Assign "${selectedPlan.name}" ($${selectedPlan.price_monthly}/mo) to this dealership?`)) return;
     try {
-      await fetchWithAuth(`/dealerships/${dealershipId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ subscription_plan: newPlan })
+      await api.post('/subscriptions/admin/assign', {
+        subscriber_type: 'dealership',
+        subscriber_id: dealershipId,
+        plan_id: planId,
+        billing_cycle: 'monthly',
       });
-      alert('Plan updated successfully');
       loadData();
     } catch (error) {
-      alert('Failed to update plan: ' + error.message);
+      alert('Failed to update plan: ' + (error.response?.data?.error || error.message));
     }
   };
 
@@ -277,6 +283,9 @@ export default function AdminDashboard() {
                   Plan
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Amount
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -308,6 +317,11 @@ export default function AdminDashboard() {
                   <td className="px-6 py-4 whitespace-nowrap">
                     {getPlanBadge(dealership.subscription_plan)}
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    {dealership.subscription_amount
+                      ? `$${Number(dealership.subscription_amount).toLocaleString()}/mo`
+                      : <span className="text-gray-400">-</span>}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     {getStatusBadge(dealership.subscription_status)}
                   </td>
@@ -334,13 +348,16 @@ export default function AdminDashboard() {
                         <option value="expired">Expired</option>
                       </select>
                       <select
-                        value={dealership.subscription_plan}
+                        value={plans.find(p => p.name.toLowerCase() === (dealership.subscription_plan || '').toLowerCase())?.id || ''}
                         onChange={(e) => handlePlanChange(dealership.id, e.target.value)}
                         className="text-xs border border-gray-300 rounded px-2 py-1"
                       >
-                        <option value="starter">Starter</option>
-                        <option value="professional">Professional</option>
-                        <option value="enterprise">Enterprise</option>
+                        <option value="">Select plan</option>
+                        {plans.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} — ${p.price_monthly}/mo
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </td>

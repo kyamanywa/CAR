@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
-import { addMyVehicle, getMakes, getModels, getColors } from '../api';
+import { ArrowLeft, Camera, X } from 'lucide-react';
+import { addMyVehicle, getMakes, getModels, getColors, uploadVehicleImage } from '../api';
 
 export default function AddVehicle() {
   const navigate = useNavigate();
@@ -15,13 +15,18 @@ export default function AddVehicle() {
     fuel_type: 'petrol',
     transmission: 'automatic',
     mileage: '',
+    condition: 'Good',
     purchase_price: '',
     sale_price: '',
     quantity: 1,
-    notes: ''
+    notes: '',
+    image_url: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState('');
+  const [imageUploading, setImageUploading] = useState(false);
   
   // Reference data
   const [makes, setMakes] = useState([]);
@@ -74,6 +79,29 @@ export default function AddVehicle() {
     } else {
       setFormData(prev => ({ ...prev, [name]: value }));
     }
+  };
+
+  const handleImageChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    // Upload immediately so we have the URL ready
+    setImageUploading(true);
+    try {
+      const res = await uploadVehicleImage(file);
+      setFormData(prev => ({ ...prev, image_url: res.data.data.image_url }));
+    } catch (err) {
+      setError('Image upload failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setImageUploading(false);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    setImageFile(null);
+    setImagePreview('');
+    setFormData(prev => ({ ...prev, image_url: '' }));
   };
 
   const handleSubmit = async (e) => {
@@ -266,6 +294,20 @@ export default function AddVehicle() {
                 placeholder="e.g., 45000"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Condition</label>
+              <select
+                name="condition"
+                value={formData.condition || 'Good'}
+                onChange={handleChange}
+                className="w-full border rounded-lg px-3 py-2"
+              >
+                <option value="Excellent">Excellent</option>
+                <option value="Good">Good</option>
+                <option value="Fair">Fair</option>
+                <option value="Poor">Poor</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -320,6 +362,44 @@ export default function AddVehicle() {
               <p className="text-sm text-gray-500 mt-1">Number of identical vehicles in your inventory</p>
             </div>
           </div>
+        </div>
+
+        {/* Vehicle Photos */}
+        <div>
+          <h2 className="text-xl font-bold mb-4">Vehicle Photo</h2>
+          {imagePreview ? (
+            <div className="relative inline-block">
+              <img
+                src={imagePreview}
+                alt="Vehicle preview"
+                className="w-64 h-44 object-cover rounded-lg border"
+              />
+              <button
+                type="button"
+                onClick={handleRemoveImage}
+                className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 hover:bg-red-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+              {imageUploading && (
+                <div className="absolute inset-0 bg-white/60 flex items-center justify-center rounded-lg">
+                  <span className="text-sm text-gray-700">Uploading...</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <label className="cursor-pointer flex flex-col items-center justify-center w-64 h-44 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-400 hover:bg-blue-50 transition">
+              <Camera className="w-10 h-10 text-gray-400 mb-2" />
+              <span className="text-sm text-gray-500">Click to upload photo</span>
+              <span className="text-xs text-gray-400">JPG, PNG or WebP · max 5 MB</span>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={handleImageChange}
+                className="hidden"
+              />
+            </label>
+          )}
         </div>
 
         {/* Notes */}

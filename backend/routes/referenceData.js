@@ -13,8 +13,25 @@ router.get('/makes', auth, bondFilter, async (req, res) => {
   const db = getDb();
   
   try {
-    const stmt = db.prepare('SELECT * FROM vehicle_makes WHERE foreign_bond_id = ? ORDER BY name ASC');
-    stmt.bind([req.user.foreign_bond_id]);
+    let query = 'SELECT * FROM vehicle_makes WHERE 1=1';
+    const params = [];
+    
+    // Filter by foreign_bond_id for non-admin users
+    if (!req.isAdmin) {
+      if (req.isForeignBondUser && req.foreignBondId) {
+        query += ' AND foreign_bond_id = ?';
+        params.push(req.foreignBondId);
+      } else if (req.isDealershipManager && req.bondId) {
+        // Dealerships see all supplier makes (public reference data)
+        query += ' AND foreign_bond_id > 0';
+      }
+    }
+    // Admin sees all makes (no filter)
+    
+    query += ' ORDER BY name ASC';
+    
+    const stmt = db.prepare(query);
+    stmt.bind(params);
     
     const makes = [];
     while (stmt.step()) {
@@ -162,9 +179,21 @@ router.get('/models', auth, bondFilter, async (req, res) => {
       SELECT vm.*, vma.name as make_name 
       FROM vehicle_models vm 
       JOIN vehicle_makes vma ON vm.make_id = vma.id
-      WHERE vm.foreign_bond_id = ?
+      WHERE 1=1
     `;
-    const params = [req.user.foreign_bond_id];
+    const params = [];
+    
+    // Filter by foreign_bond_id for non-admin users
+    if (!req.isAdmin) {
+      if (req.isForeignBondUser && req.foreignBondId) {
+        query += ' AND vm.foreign_bond_id = ?';
+        params.push(req.foreignBondId);
+      } else if (req.isDealershipManager && req.bondId) {
+        // Dealerships see models from suppliers
+        query += ' AND vm.foreign_bond_id > 0'; // See all supplier models
+      }
+    }
+    // Admin sees all models (no additional filter)
     
     if (make_id) {
       query += ' AND vm.make_id = ?';
@@ -355,8 +384,22 @@ router.get('/colors', auth, bondFilter, async (req, res) => {
   const db = getDb();
   
   try {
-    const stmt = db.prepare('SELECT * FROM vehicle_colors WHERE foreign_bond_id = ? ORDER BY name ASC');
-    stmt.bind([req.user.foreign_bond_id]);
+    let query = 'SELECT * FROM vehicle_colors WHERE 1=1';
+    const params = [];
+
+    if (!req.isAdmin) {
+      if (req.isForeignBondUser && req.foreignBondId) {
+        query += ' AND foreign_bond_id = ?';
+        params.push(req.foreignBondId);
+      } else if (req.isDealershipManager || req.user?.role === 'dealership_sales' || req.user?.role === 'dealership_accountant') {
+        // Dealership users see all colors from all suppliers as reference data
+        query += ' AND foreign_bond_id > 0';
+      }
+    }
+
+    query += ' ORDER BY name ASC';
+    const stmt = db.prepare(query);
+    stmt.bind(params);
     
     const colors = [];
     while (stmt.step()) {

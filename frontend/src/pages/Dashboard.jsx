@@ -1,27 +1,51 @@
 import { useState, useEffect } from 'react';
 import { getDashboardStats, getPipeline, getRecentOrders, getRecentSales, getUgandanBonds } from '../api';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Car, ShoppingCart, DollarSign, Building2, TrendingUp, Package, Users, CheckCircle, XCircle } from 'lucide-react';
+import { Car, ShoppingCart, DollarSign, Building2, TrendingUp, Package, Users, CheckCircle, XCircle, Calendar } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import UsageMeter from '../components/UsageMeter';
+import { useCurrency } from '../CurrencyContext';
+import { useNavigate } from 'react-router-dom';
+
+const DATE_RANGES = [
+  { label: 'This Month', value: 'month' },
+  { label: 'Last 3 Months', value: '3months' },
+  { label: 'This Year', value: 'year' },
+  { label: 'All Time', value: 'all' },
+];
+
+function getDateRange(range) {
+  const now = new Date();
+  const from = new Date();
+  if (range === 'month') from.setDate(1);
+  else if (range === '3months') from.setMonth(now.getMonth() - 3);
+  else if (range === 'year') from.setMonth(0, 1);
+  else return {};
+  return { from: from.toISOString().slice(0, 10), to: now.toISOString().slice(0, 10) };
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { formatUGX } = useCurrency();
+  const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [pipeline, setPipeline] = useState([]);
   const [recentOrders, setRecentOrders] = useState([]);
   const [recentSales, setRecentSales] = useState([]);
   const [bonds, setBonds] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState('month');
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [dateRange]);
 
   const fetchData = async () => {
+    setLoading(true);
     try {
+      const rangeParams = getDateRange(dateRange);
       const promises = [
-        getDashboardStats(),
+        getDashboardStats(rangeParams),
         getPipeline(),
         getRecentOrders(),
         getRecentSales()
@@ -33,9 +57,14 @@ export default function Dashboard() {
       }
       
       const results = await Promise.all(promises);
+      const normalizePipeline = (raw = []) => {
+        const stageOrder = ['Available', 'Ordered', 'In Transit', 'At Border', 'In Stock', 'Sold'];
+        const byStage = new Map((raw || []).map((r) => [r.stage, Number(r.count || 0)]));
+        return stageOrder.map((stage) => ({ stage, count: byStage.get(stage) || 0 }));
+      };
       
       setStats(results[0].data.data);
-      setPipeline(results[1].data.data);
+      setPipeline(normalizePipeline(results[1].data.data));
       setRecentOrders(results[2].data.data);
       setRecentSales(results[3].data.data);
       
@@ -49,10 +78,11 @@ export default function Dashboard() {
     }
   };
 
-  const formatUGX = (value) => {
-    if (!value) return 'UGX 0';
-    return `UGX ${(value / 1000000).toFixed(1)}M`;
-  };
+  const formatLocalMoney = (value) => formatUGX(value);
+  const salesRevenue = Number(stats?.sales?.total_revenue || 0);
+  const salesProfit = Number(stats?.sales?.total_profit || 0);
+  const salesCost = Math.max(0, salesRevenue - salesProfit);
+  const salesMarginPct = salesRevenue > 0 ? (salesProfit / salesRevenue) * 100 : 0;
 
   if (loading) {
     return (
@@ -64,7 +94,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-start">
+      <div className="flex flex-wrap justify-between items-start gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
           <p className="text-gray-500">
@@ -73,7 +103,21 @@ export default function Dashboard() {
               : 'Welcome to Uganda Car Import Tracking System'}
           </p>
         </div>
-        
+        {/* Date range selector */}
+        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-1.5 shadow-sm">
+          <Calendar size={15} className="text-gray-400" />
+          <div className="flex gap-1">
+            {DATE_RANGES.map(r => (
+              <button
+                key={r.value}
+                onClick={() => setDateRange(r.value)}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${dateRange === r.value ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
         {/* Usage Meter for Dealerships */}
         {user?.account_type?.includes('dealership') && (
           <div className="w-80">
@@ -152,7 +196,12 @@ export default function Dashboard() {
       )}
 
       {/* Regular Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
+          KPI Summary — {DATE_RANGES.find(r => r.value === dateRange)?.label}
+        </h2>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <div className="card">
           <div className="flex items-center justify-between">
             <div>
@@ -184,7 +233,7 @@ export default function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-500">Total Revenue</p>
-              <p className="text-2xl font-bold">{formatUGX(stats?.sales?.total_revenue)}</p>
+              <p className="text-2xl font-bold">{formatLocalMoney(stats?.sales?.total_revenue)}</p>
               <p className="text-xs text-green-600">{stats?.sales?.total_sales || 0} sales</p>
             </div>
             <div className="p-3 bg-green-100 rounded-lg">
@@ -196,9 +245,22 @@ export default function Dashboard() {
         <div className="card">
           <div className="flex items-center justify-between">
             <div>
+              <p className="text-sm text-gray-500">Cost of Sales</p>
+              <p className="text-2xl font-bold">{formatLocalMoney(salesCost)}</p>
+              <p className="text-xs text-gray-500">Estimated acquisition cost</p>
+            </div>
+            <div className="p-3 bg-orange-100 rounded-lg">
+              <Package className="w-6 h-6 text-orange-600" />
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
               <p className="text-sm text-gray-500">Total Profit</p>
-              <p className="text-2xl font-bold">{formatUGX(stats?.sales?.total_profit)}</p>
-              <p className="text-xs text-blue-600">All time</p>
+              <p className="text-2xl font-bold">{formatLocalMoney(stats?.sales?.total_profit)}</p>
+              <p className="text-xs text-blue-600">Margin: {salesMarginPct.toFixed(2)}%</p>
             </div>
             <div className="p-3 bg-purple-100 rounded-lg">
               <TrendingUp className="w-6 h-6 text-purple-600" />
@@ -262,15 +324,17 @@ export default function Dashboard() {
               <p className="text-gray-500 text-sm">No recent sales</p>
             ) : (
               recentSales.map((sale) => (
-                <div key={sale.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                <button
+                  key={sale.id}
+                  onClick={() => navigate('/sales', { state: { openSaleId: sale.id } })}
+                  className="w-full text-left flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-blue-50 transition-colors"
+                >
                   <div>
                     <p className="font-medium">{sale.make} {sale.model} {sale.year}</p>
                     <p className="text-sm text-gray-500">{sale.customer_name}</p>
                   </div>
                   <div className="text-right">
-                    <p className="font-medium text-green-600">
-                      UGX {(sale.selling_price_ugx / 1000000).toFixed(1)}M
-                    </p>
+                    <p className="font-medium text-green-600">{formatLocalMoney(sale.selling_price_ugx)}</p>
                     <span className={`badge ${
                       sale.payment_status === 'Paid' ? 'badge-green' :
                       sale.payment_status === 'Partial' ? 'badge-yellow' : 'badge-red'
@@ -278,7 +342,7 @@ export default function Dashboard() {
                       {sale.payment_status}
                     </span>
                   </div>
-                </div>
+                </button>
               ))
             )}
           </div>

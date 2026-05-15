@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { getUsageStats, PLAN_LIMITS } = require('../middleware/usageLimits');
+const db = require('../db');
+const { getUsageStats } = require('../middleware/usageLimits');
 
 // Get usage statistics for current dealership
 router.get('/stats', auth, async (req, res) => {
@@ -23,16 +24,13 @@ router.get('/stats', auth, async (req, res) => {
   }
 });
 
-// Get available plans
+// Get available plans (from DB)
 router.get('/plans', async (req, res) => {
   try {
-    const plans = Object.entries(PLAN_LIMITS).map(([key, value]) => ({
-      id: key,
-      name: key.charAt(0).toUpperCase() + key.slice(1),
-      ...value
-    }));
-
-    res.json({ data: plans });
+    const result = await db.query(
+      `SELECT * FROM subscription_plans WHERE status = 'active' ORDER BY price_monthly ASC`
+    );
+    res.json({ data: result.rows });
   } catch (error) {
     console.error('Error:', error);
     res.status(500).json({ error: 'Server error' });

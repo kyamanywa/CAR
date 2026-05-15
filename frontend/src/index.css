@@ -7,6 +7,92 @@ body {
   background-color: #f3f4f6;
 }
 
+/* ─── PRINT / DOCUMENT STYLES ─────────────────────────────────────────────── */
+@media print {
+  /* Hide all chrome — sidebar, header, buttons, nav */
+  aside, header, nav,
+  .print\:hidden,
+  button:not(.print-visible),
+  .no-print { display: none !important; }
+
+  /* Reset page to white document */
+  html, body {
+    background: white !important;
+    color: black !important;
+    font-size: 12pt;
+    line-height: 1.5;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Full-width content, no overflow clipping */
+  main, .flex-1, #root, .flex {
+    all: unset !important;
+    display: block !important;
+    width: 100% !important;
+    overflow: visible !important;
+  }
+
+  /* Page margins */
+  @page {
+    size: A4;
+    margin: 20mm 15mm 20mm 15mm;
+  }
+
+  /* Clean table styles */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    page-break-inside: auto;
+  }
+  tr { page-break-inside: avoid; page-break-after: auto; }
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  th, td {
+    border: 1px solid #ccc !important;
+    padding: 6pt 8pt !important;
+    font-size: 10pt;
+    background: white !important;
+    color: black !important;
+  }
+  th { background: #f3f4f6 !important; font-weight: bold; }
+
+  /* Cards become plain boxes */
+  .card, [class*="rounded"], [class*="shadow"] {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    border: 1px solid #e5e7eb !important;
+  }
+
+  /* Badges / chips — keep text, drop colour */
+  [class*="bg-green"], [class*="bg-blue"], [class*="bg-red"],
+  [class*="bg-yellow"], [class*="bg-purple"], [class*="bg-orange"],
+  [class*="bg-gray"] {
+    background: transparent !important;
+    color: black !important;
+  }
+
+  /* Force black text everywhere */
+  * { color: black !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  /* Headings */
+  h1 { font-size: 18pt; margin-bottom: 8pt; }
+  h2 { font-size: 14pt; margin-bottom: 6pt; }
+  h3 { font-size: 12pt; margin-bottom: 4pt; }
+
+  /* Don't break inside summary cards */
+  .summary-card, .invoice-card { page-break-inside: avoid; }
+
+  /* Print header (company name + date auto-appended) */
+  .print-header {
+    display: block !important;
+    text-align: center;
+    margin-bottom: 16pt;
+    border-bottom: 2pt solid black;
+    padding-bottom: 8pt;
+  }
+}
+
 .card {
   @apply bg-white rounded-lg shadow-sm p-6;
 }

@@ -2,7 +2,18 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { checkUserLimit } = require('../middleware/usageLimits');
+
+const sanitizeUser = (user) => {
+  if (!user) {
+    return user;
+  }
+
+  const { password_hash, ...safeUser } = user;
+  return safeUser;
+};
+
 // Middleware to check if user is owner
 const requireOwner = (req, res, next) => {
   if (req.user.account_type !== 'owner') {
@@ -18,7 +29,7 @@ router.get('/members', async (req, res) => {
     const organizationType = req.user.foreign_bond_id ? 'foreign_bond_id' : 'dealership_id';
     
     const result = await db.query(
-      `SELECT id, name, email, account_type, role, is_active, last_login_at, created_at, invited_by
+      `SELECT id, full_name, email, account_type, role, is_active, last_login_at, created_at, invited_by
        FROM users 
        WHERE ${organizationType} = $1 
        ORDER BY 
@@ -159,15 +170,24 @@ router.post('/create-user', requireOwner, async (req, res) => {
     const bcrypt = require('bcryptjs');
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    // Determine role based on organization type
-    const role = req.user.foreign_bond_id ? 'foreign_bond_user' : 'dealership_manager';
+    // Determine role based on organization type and requested role
+    const DEALERSHIP_ROLES = ['dealership_manager', 'dealership_sales', 'dealership_accountant'];
+    const SUPPLIER_ROLES = ['foreign_bond_user'];
+    let role;
+    if (req.user.foreign_bond_id) {
+      role = 'foreign_bond_user';
+    } else {
+      // Allow manager to choose the specific dealership sub-role
+      const requestedRole = req.body.role;
+      role = DEALERSHIP_ROLES.includes(requestedRole) ? requestedRole : 'dealership_manager';
+    }
     
     // Create user account
     const userResult = await db.query(
       `INSERT INTO users 
-       (name, email, password, role, account_type, ${organizationField}, invited_by, is_active)
+       (full_name, email, password_hash, role, account_type, ${organizationField}, invited_by, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
-       RETURNING id, name, email, role, account_type`,
+       RETURNING id, full_name, email, role, account_type`,
       [name, email.toLowerCase(), hashedPassword, role, account_type, organizationId, req.user.id]
     );
     
@@ -175,7 +195,7 @@ router.post('/create-user', requireOwner, async (req, res) => {
     
     res.json({ 
       message: 'User created successfully',
-      data: userResult.rows[0]
+      data: sanitizeUser(userResult.rows[0])
     });
   } catch (error) {
     console.error('Error creating user:', error);
@@ -223,9 +243,9 @@ router.post('/accept-invite/:token', async (req, res) => {
     // Create user account
     const userResult = await db.query(
       `INSERT INTO users 
-       (name, email, password, role, account_type, ${organizationField}, invited_by, is_active)
+       (full_name, email, password_hash, role, account_type, ${organizationField}, invited_by, is_active)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
-       RETURNING id, name, email, role, account_type`,
+       RETURNING id, full_name, email, role, account_type`,
       [name, invite.email, hashedPassword, role, invite.account_type, organizationId, invite.invited_by]
     );
     
@@ -241,7 +261,7 @@ router.post('/accept-invite/:token', async (req, res) => {
     
     res.json({ 
       message: 'Account created successfully',
-      data: userResult.rows[0]
+      data: sanitizeUser(userResult.rows[0])
     });
   } catch (error) {
     console.error('Error accepting invitation:', error);
@@ -285,6 +305,14 @@ router.patch('/members/:id', requireOwner, async (req, res) => {
       params.push(account_type);
       paramIndex++;
     }
+
+    // Allow updating the dealership role directly
+    const DEALERSHIP_ROLES = ['dealership_manager', 'dealership_sales', 'dealership_accountant'];
+    if (req.body.role && DEALERSHIP_ROLES.includes(req.body.role) && !req.user.foreign_bond_id) {
+      updates.push(`role = $${paramIndex}`);
+      params.push(req.body.role);
+      paramIndex++;
+    }
     
     if (typeof is_active === 'boolean') {
       updates.push(`is_active = $${paramIndex}`);
@@ -307,7 +335,7 @@ router.patch('/members/:id', requireOwner, async (req, res) => {
     
     res.json({ 
       message: 'Team member updated successfully',
-      data: result.rows[0]
+      data: sanitizeUser(result.rows[0])
     });
   } catch (error) {
     console.error('Error updating team member:', error);
@@ -341,10 +369,9 @@ router.delete('/members/:id', requireOwner, async (req, res) => {
       return res.status(400).json({ error: 'Cannot remove owner account' });
     }
     
-    // Soft delete - set is_active to false
     await db.query(
-      `UPDATE users SET is_active = 0 WHERE id = $1`,
-      [id]
+      `DELETE FROM users WHERE id = $1 AND ${organizationField} = $2`,
+      [id, organizationId]
     );
     
     await db.saveDb();
@@ -353,6 +380,52 @@ router.delete('/members/:id', requireOwner, async (req, res) => {
   } catch (error) {
     console.error('Error removing team member:', error);
     res.status(500).json({ error: 'Failed to remove team member' });
+  }
+});
+
+// Reset team member password (owner only)
+router.patch('/members/:id/password', requireOwner, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { new_password } = req.body;
+
+    if (id == req.user.id) {
+      return res.status(400).json({ error: 'Use your account settings to change your own password' });
+    }
+
+    if (!new_password || new_password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const organizationId = req.user.foreign_bond_id || req.user.dealership_id;
+    const organizationField = req.user.foreign_bond_id ? 'foreign_bond_id' : 'dealership_id';
+
+    // Verify the user belongs to this org and is not an owner
+    const userCheck = await db.query(
+      `SELECT account_type FROM users WHERE id = $1 AND ${organizationField} = $2`,
+      [id, organizationId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found in your organization' });
+    }
+    if (userCheck.rows[0].account_type === 'owner') {
+      return res.status(400).json({ error: 'Cannot change password of another owner' });
+    }
+
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+
+    await db.query(
+      `UPDATE users SET password_hash = $1 WHERE id = $2`,
+      [hashedPassword, id]
+    );
+
+    await db.saveDb();
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 

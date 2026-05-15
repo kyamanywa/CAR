@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 const api = axios.create({
-  baseURL: 'http://localhost:3000/api',
+  baseURL: API_BASE,
 });
 
 api.interceptors.request.use((config) => {
@@ -20,9 +22,12 @@ export const fetchWithAuth = async (endpoint) => {
 
 // Auth
 export const login = (email, password) => api.post('/auth/login', { email, password });
+export const getMyProfile = () => api.get('/auth/me');
+export const updateMyProfile = (data) => api.patch('/auth/me', data);
+export const changeMyPassword = (data) => api.patch('/auth/me/password', data);
 
 // Dashboard
-export const getDashboardStats = () => api.get('/dashboard/stats');
+export const getDashboardStats = (params) => api.get('/dashboard/stats', { params });
 export const getPipeline = () => api.get('/dashboard/pipeline');
 export const getRecentOrders = () => api.get('/dashboard/recent-orders');
 export const getRecentSales = () => api.get('/dashboard/recent-sales');
@@ -74,6 +79,8 @@ export const getVehicles = (params) => api.get('/inventory', { params });
 export const getVehicle = (id) => api.get(`/inventory/${id}`);
 export const getVehicleHistory = (id) => api.get(`/inventory/${id}/history`);
 export const searchByChassis = (chassis) => api.get(`/inventory/search/chassis/${chassis}`);
+export const updateVehicle = (id, data) => api.patch(`/inventory/${id}`, data);
+export const deleteVehicle = (id) => api.delete(`/inventory/${id}`);
 export const updateVehicleImage = (id, imageUrl) => api.patch(`/inventory/${id}`, { image_url: imageUrl });
 
 // Local Sales
@@ -93,6 +100,7 @@ export const deleteCustomer = (id) => api.delete(`/customers/${id}`);
 
 // Reports
 export const getFinancialSummary = (params) => api.get('/reports/financial-summary', { params });
+export const getFinancialManagement = (params) => api.get('/reports/financial-management', { params });
 export const getInventoryReport = () => api.get('/reports/inventory');
 export const getCustomerReport = () => api.get('/reports/customers');
 export const getImportOrdersReport = () => api.get('/reports/import-orders');
@@ -126,6 +134,15 @@ export const updateMyVehicle = (id, data) => api.put(`/inventory/my/vehicles/${i
 export const deleteMyVehicle = (id) => api.delete(`/inventory/my/vehicles/${id}`);
 export const getMyOrders = () => api.get('/inventory/my/orders');
 
+// Dealership local inventory routes
+export const getDealershipVehicles = () => api.get('/inventory/dealership/vehicles');
+export const addDealershipVehicle = (data) => api.post('/inventory/dealership/vehicles', data);
+export const updateDealershipVehicle = (id, data) => api.put(`/inventory/dealership/vehicles/${id}`, data);
+export const deleteDealershipVehicle = (id) => api.delete(`/inventory/dealership/vehicles/${id}`);
+
+// Import order payment recording
+export const recordImportOrderPayment = (id, data) => api.patch(`/import-orders/${id}/payment`, data);
+
 // Team Management
 export const getTeamMembers = () => api.get('/team/members');
 export const getPendingInvitations = () => api.get('/team/invitations');
@@ -133,12 +150,29 @@ export const inviteTeamMember = (data) => api.post('/team/invite', data);
 export const createTeamMember = (data) => api.post('/team/create-user', data);
 export const acceptInvitation = (token, data) => api.post(`/team/accept-invite/${token}`, data);
 export const updateTeamMember = (id, data) => api.patch(`/team/members/${id}`, data);
+export const resetTeamMemberPassword = (id, new_password) => api.patch(`/team/members/${id}/password`, { new_password });
 export const removeTeamMember = (id) => api.delete(`/team/members/${id}`);
 export const cancelInvitation = (id) => api.delete(`/team/invitations/${id}`);
 
 // Subscription Info
 export const getMySubscription = () => api.get('/subscription-info/my-subscription');
 export const checkLimit = (action) => api.post('/subscription-info/check-limit', { action });
+
+// Admin Subscription Plan CRUD
+export const getAdminSubscriptionPlans = (params) => api.get('/subscriptions/admin/plans', { params });
+export const createSubscriptionPlan = (data) => api.post('/subscriptions/plans', data);
+export const updateSubscriptionPlan = (id, data) => api.put(`/subscriptions/plans/${id}`, data);
+export const deactivateSubscriptionPlan = (id) => api.delete(`/subscriptions/plans/${id}`);
+export const hardDeleteSubscriptionPlan = (id) => api.delete(`/subscriptions/plans/${id}?force=true`);
+export const getAdminSubscribers = () => api.get('/subscriptions/admin/subscribers');
+export const assignPlanToSubscriber = (data) => api.post('/subscriptions/admin/assign', data);
+
+// Vehicle image upload
+export const uploadVehicleImage = (file) => {
+  const form = new FormData();
+  form.append('image', file);
+  return api.post('/inventory/upload-image', form, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
 
 // Reference Data
 export const getMakes = () => api.get('/reference-data/makes');
@@ -162,5 +196,20 @@ export const getOrderTimeline = (orderId) => api.get(`/tracking/order/${orderId}
 export const addTrackingEvent = (data) => api.post('/tracking', data);
 export const updateTrackingEvent = (id, data) => api.patch(`/tracking/${id}`, data);
 export const deleteTrackingEvent = (id) => api.delete(`/tracking/${id}`);
+
+// System Configuration
+export const getSystemConfig = () => api.get('/system/config');
+
+// Test Drives
+export const getTestDrives = (params) => api.get('/test-drives', { params });
+export const createTestDrive = (data) => api.post('/test-drives', data);
+export const updateTestDrive = (id, data) => api.patch(`/test-drives/${id}`, data);
+export const deleteTestDrive = (id) => api.delete(`/test-drives/${id}`);
+
+// Expenses
+export const getExpenses = (params) => api.get('/expenses', { params });
+export const createExpense = (data) => api.post('/expenses', data);
+export const deleteExpense = (id) => api.delete(`/expenses/${id}`);
+export const getPaymentAging = () => api.get('/expenses/aging');
 
 export default api;

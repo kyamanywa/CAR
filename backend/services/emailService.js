@@ -114,7 +114,7 @@ const templates = {
     html: `
       <h2>Order Confirmed by Supplier! ✅</h2>
       <p>Dear ${dealership.name},</p>
-      <p>Great news! Supplier <strong>${supplier.company_name}</strong> has confirmed your order <strong>${order.order_number}</strong>.</p>
+      <p>Great news! Supplier <strong>${supplier.company_name || supplier.name}</strong> has confirmed your order <strong>${order.order_number}</strong>.</p>
       <p><strong>Order Details:</strong></p>
       <ul>
         <li>Total Vehicles: ${order.vehicle_count}</li>
@@ -129,7 +129,7 @@ const templates = {
     subject: `New Order Received: ${order.order_number}`,
     html: `
       <h2>New Order Received! 🛒</h2>
-      <p>Dear ${supplier.company_name},</p>
+      <p>Dear ${supplier.company_name || supplier.name},</p>
       <p>You have received a new order from <strong>${dealership.name}</strong>!</p>
       <p><strong>Order Details:</strong></p>
       <ul>

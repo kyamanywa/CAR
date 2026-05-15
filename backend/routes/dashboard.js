@@ -4,9 +4,29 @@ const db = require('../db');
 const auth = require('../middleware/auth');
 const bondFilter = require('../middleware/bondFilter');
 
+function buildScopedCondition(req, column, joiner = 'AND') {
+  if (req.isDealershipManager) {
+    return ` ${joiner} ${column} = ${req.bondId}`;
+  }
+
+  if (req.isForeignBondUser) {
+    return ` ${joiner} ${column} = ${req.foreignBondId}`;
+  }
+
+  return '';
+}
+
 // Get main dashboard stats (bond-filtered for managers)
 router.get('/stats', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
+    const { from, to } = req.query;
+    const dateClause = from && to ? ` AND sale_date BETWEEN '${from}' AND '${to}'` : '';
+    const orderDateClause = from && to ? ` AND created_at BETWEEN '${from}' AND '${to} 23:59:59'` : '';
+
     let vehicleFilter = '';
     let orderFilter = '';
     let salesFilter = '';
@@ -25,6 +45,10 @@ router.get('/stats', auth, bondFilter, async (req, res) => {
     }
     // Admin sees everything (no filter)
     
+    const soldUnitsSubquery = req.isDealershipManager
+      ? `(SELECT COALESCE(SUM(COALESCE(quantity, 1)), 0) FROM local_sales WHERE dealership_id = ${req.bondId})`
+      : `0`;
+
     const vehicles = db.query(`
       SELECT 
         COALESCE(SUM(quantity), 0) as total,
@@ -32,7 +56,7 @@ router.get('/stats', auth, bondFilter, async (req, res) => {
         COALESCE(SUM(CASE WHEN status = 'In Transit' THEN quantity ELSE 0 END), 0) as in_transit,
         COALESCE(SUM(CASE WHEN status = 'At Border' THEN quantity ELSE 0 END), 0) as at_border,
         COALESCE(SUM(CASE WHEN status = 'In Stock' THEN quantity ELSE 0 END), 0) as in_stock,
-        COALESCE(SUM(CASE WHEN status = 'Sold' THEN quantity ELSE 0 END), 0) as sold
+        ${soldUnitsSubquery} as sold
       FROM vehicles
       ${vehicleFilter}
     `);
@@ -56,7 +80,7 @@ router.get('/stats', auth, bondFilter, async (req, res) => {
         COALESCE(SUM(selling_price_ugx - total_cost_ugx), 0) as total_profit,
         COALESCE(AVG(selling_price_ugx - total_cost_ugx), 0) as avg_profit
       FROM local_sales
-      ${salesFilter}
+      ${salesFilter}${salesFilter ? dateClause.replace(' AND ', ' AND ') : (dateClause ? 'WHERE 1=1' + dateClause : '')}
     `);
     
     // Bond counts - only for admin
@@ -85,6 +109,10 @@ router.get('/stats', auth, bondFilter, async (req, res) => {
 // Get pipeline data for chart (bond-filtered)
 router.get('/pipeline', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
     let whereClause = '';
     if (req.isDealershipManager) {
       whereClause = `WHERE dealership_id = ${req.bondId}`;
@@ -92,6 +120,10 @@ router.get('/pipeline', auth, bondFilter, async (req, res) => {
       whereClause = `WHERE foreign_bond_id = ${req.foreignBondId}`;
     }
     
+    const soldUnitsQuery = req.isDealershipManager
+      ? `SELECT COALESCE(SUM(COALESCE(quantity, 1)), 0) as sold_units FROM local_sales WHERE dealership_id = ${req.bondId}`
+      : `SELECT 0 as sold_units`;
+
     const result = db.query(`
       SELECT 'Available' as stage, COALESCE(SUM(quantity), 0) as count FROM vehicles ${whereClause} ${whereClause ? 'AND' : 'WHERE'} status = 'Available'
       UNION ALL
@@ -103,7 +135,7 @@ router.get('/pipeline', auth, bondFilter, async (req, res) => {
       UNION ALL
       SELECT 'In Stock', COALESCE(SUM(quantity), 0) FROM vehicles ${whereClause} ${whereClause ? 'AND' : 'WHERE'} status = 'In Stock'
       UNION ALL
-      SELECT 'Sold', COALESCE(SUM(quantity), 0) FROM vehicles ${whereClause} ${whereClause ? 'AND' : 'WHERE'} status = 'Sold'
+      SELECT 'Sold', sold_units FROM (${soldUnitsQuery}) s
     `);
     res.json({ data: result.rows });
   } catch (error) {
@@ -114,6 +146,10 @@ router.get('/pipeline', auth, bondFilter, async (req, res) => {
 // Get recent orders (bond-filtered)
 router.get('/recent-orders', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
     let whereClause = '';
     if (req.isDealershipManager) {
       whereClause = `WHERE io.dealership_id = ${req.bondId}`;
@@ -126,7 +162,7 @@ router.get('/recent-orders', auth, bondFilter, async (req, res) => {
         fb.name as foreign_bond_name,
         fb.country as origin_country,
         d.name as dealership_name,
-        (SELECT COUNT(DISTINCT vehicle_id) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count,
+        (SELECT COALESCE(SUM(ov.quantity), 0) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count,
         (SELECT COALESCE(SUM(quantity), 0) FROM order_vehicles ov WHERE ov.order_id = io.id) as total_units
       FROM import_orders io
       LEFT JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
@@ -145,6 +181,10 @@ router.get('/recent-orders', auth, bondFilter, async (req, res) => {
 // Get recent sales (bond-filtered)
 router.get('/recent-sales', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
     let whereClause = '';
     if (req.isDealershipManager) {
       whereClause = `WHERE ls.dealership_id = ${req.bondId}`;
@@ -174,22 +214,38 @@ router.get('/recent-sales', auth, bondFilter, async (req, res) => {
 // Sales analytics (bond-filtered)
 router.get('/analytics/sales', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
     const { period } = req.query;
     let interval = '-30 days';
     if (period === 'week') interval = '-7 days';
     if (period === 'quarter') interval = '-90 days';
     if (period === 'year') interval = '-365 days';
 
-    const dealershipCondition = req.isDealershipManager ? `AND dealership_id = ${req.bondId}` : '';
+    if (req.isForeignBondUser) {
+      return res.json({
+        data: {
+          sales_over_time: [],
+          sales_by_make: [],
+          sales_by_model: [],
+          sales_by_color: [],
+          payment_status: []
+        }
+      });
+    }
+
+    const salesCondition = buildScopedCondition(req, 'ls.dealership_id');
     
     const salesOverTime = db.query(`
       SELECT DATE(sale_date) as date, 
         COUNT(*) as sales_count,
         SUM(selling_price_ugx) as revenue_ugx,
         SUM(selling_price_ugx - total_cost_ugx) as profit_ugx
-      FROM local_sales
+      FROM local_sales ls
       WHERE sale_date >= datetime('now', '${interval}')
-      ${dealershipCondition}
+      ${salesCondition}
       GROUP BY DATE(sale_date)
       ORDER BY date
     `);
@@ -199,8 +255,19 @@ router.get('/analytics/sales', auth, bondFilter, async (req, res) => {
       FROM local_sales ls
       JOIN vehicles v ON ls.vehicle_id = v.id
       WHERE ls.sale_date >= datetime('now', '${interval}')
-      ${bondCondition}
+      ${salesCondition}
       GROUP BY v.make
+      ORDER BY count DESC
+      LIMIT 10
+    `);
+
+    const salesByModel = db.query(`
+      SELECT v.make, v.model, COUNT(*) as count
+      FROM local_sales ls
+      JOIN vehicles v ON ls.vehicle_id = v.id
+      WHERE ls.sale_date >= datetime('now', '${interval}')
+      ${salesCondition}
+      GROUP BY v.make, v.model
       ORDER BY count DESC
       LIMIT 10
     `);
@@ -210,26 +277,27 @@ router.get('/analytics/sales', auth, bondFilter, async (req, res) => {
       FROM local_sales ls
       JOIN vehicles v ON ls.vehicle_id = v.id
       WHERE ls.sale_date >= datetime('now', '${interval}')
-      ${bondCondition}
+      ${salesCondition}
       GROUP BY v.color
       ORDER BY count DESC
       LIMIT 10
     `);
     
     const paymentStatus = db.query(`
-      SELECT payment_status, COUNT(*) as count
-      FROM local_sales
+      SELECT payment_status, COUNT(*) as count, COALESCE(SUM(selling_price_ugx), 0) as amount
+      FROM local_sales ls
       WHERE sale_date >= datetime('now', '${interval}')
-      ${bondCondition}
+      ${salesCondition}
       GROUP BY payment_status
     `);
 
     res.json({
       data: {
-        salesOverTime: salesOverTime.rows,
-        salesByMake: salesByMake.rows,
-        salesByColor: salesByColor.rows,
-        paymentStatus: paymentStatus.rows
+        sales_over_time: salesOverTime.rows,
+        sales_by_make: salesByMake.rows,
+        sales_by_model: salesByModel.rows,
+        sales_by_color: salesByColor.rows,
+        payment_status: paymentStatus.rows
       }
     });
   } catch (error) {
@@ -241,23 +309,28 @@ router.get('/analytics/sales', auth, bondFilter, async (req, res) => {
 // Import analytics (bond-filtered)
 router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
   try {
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
     const { period } = req.query;
     let interval = '-30 days';
     if (period === 'week') interval = '-7 days';
     if (period === 'quarter') interval = '-90 days';
     if (period === 'year') interval = '-365 days';
 
-    const dealershipCondition = req.isDealershipManager ? `WHERE io.dealership_id = ${req.bondId}` : '';
-    const dealershipConditionAnd = req.isDealershipManager ? `AND io.dealership_id = ${req.bondId}` : '';
+    const importCondition = req.isDealershipManager
+      ? buildScopedCondition(req, 'io.dealership_id')
+      : buildScopedCondition(req, 'io.foreign_bond_id');
     
     const ordersOverTime = db.query(`
       SELECT DATE(io.created_at) as date, 
         COUNT(*) as order_count,
-        SUM((SELECT COUNT(*) FROM order_vehicles ov WHERE ov.order_id = io.id)) as vehicle_count,
+        SUM((SELECT COALESCE(SUM(ov.quantity), 0) FROM order_vehicles ov WHERE ov.order_id = io.id)) as vehicle_count,
         SUM(io.total_amount_usd) as total_value_usd
       FROM import_orders io
       WHERE io.created_at >= datetime('now', '${interval}')
-      ${bondConditionAnd}
+      ${importCondition}
       GROUP BY DATE(io.created_at)
       ORDER BY date
     `);
@@ -267,7 +340,7 @@ router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
       FROM import_orders io
       JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
       WHERE io.created_at >= datetime('now', '${interval}')
-      ${bondConditionAnd}
+      ${importCondition}
       GROUP BY fb.country
       ORDER BY count DESC
     `);
@@ -276,7 +349,7 @@ router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
       SELECT order_status, COUNT(*) as count
       FROM import_orders io
       WHERE io.created_at >= datetime('now', '${interval}')
-      ${bondConditionAnd}
+      ${importCondition}
       GROUP BY order_status
       ORDER BY count DESC
     `);
@@ -284,7 +357,7 @@ router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
     const avgTransitDays = db.query(`
       SELECT AVG(
         CAST(
-          (julianday(COALESCE(io.delivered_at, datetime('now'))) - julianday(s.departure_date)) 
+          (julianday(COALESCE(s.delivered_date, datetime('now'))) - julianday(s.departure_date)) 
           AS INTEGER
         )
       ) as avg_transit_days
@@ -292,15 +365,41 @@ router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
       LEFT JOIN shipping s ON s.order_id = io.id
       WHERE io.created_at >= datetime('now', '${interval}')
       AND s.departure_date IS NOT NULL
-      ${bondConditionAnd}
+      ${importCondition}
     `);
+
+    // For suppliers: Most imported makes and models
+    let mostImportedMakes = { rows: [] };
+    let mostImportedModels = { rows: [] };
+    
+    if (req.isForeignBondUser) {
+      mostImportedMakes = db.query(`
+        SELECT v.make, COUNT(*) as count
+        FROM vehicles v
+        WHERE v.foreign_bond_id = ${req.foreignBondId}
+        GROUP BY v.make
+        ORDER BY count DESC
+        LIMIT 10
+      `);
+
+      mostImportedModels = db.query(`
+        SELECT v.make, v.model, COUNT(*) as count
+        FROM vehicles v
+        WHERE v.foreign_bond_id = ${req.foreignBondId}
+        GROUP BY v.make, v.model
+        ORDER BY count DESC
+        LIMIT 10
+      `);
+    }
 
     res.json({
       data: {
         orders_over_time: ordersOverTime.rows,
         orders_by_country: ordersByCountry.rows,
         orders_by_status: ordersByStatus.rows,
-        avg_transit_days: avgTransitDays.rows[0]?.avg_transit_days || null
+        avg_transit_days: avgTransitDays.rows[0]?.avg_transit_days || null,
+        most_imported_makes: mostImportedMakes.rows,
+        most_imported_models: mostImportedModels.rows
       }
     });
   } catch (error) {
@@ -312,19 +411,32 @@ router.get('/analytics/imports', auth, bondFilter, async (req, res) => {
 // Inventory analytics (bond-filtered)
 router.get('/analytics/inventory', auth, bondFilter, async (req, res) => {
   try {
-    const dealershipCondition = req.isDealershipManager ? `WHERE dealership_id = ${req.bondId}` : '';
+    if (req.user.role === 'admin') {
+      return res.status(403).json({ error: 'Platform admin cannot access tenant dashboard data' });
+    }
+
+    let inventoryWhere = '';
+    let vehicleCondition = '';
+
+    if (req.isDealershipManager) {
+      inventoryWhere = `WHERE dealership_id = ${req.bondId}`;
+      vehicleCondition = `WHERE v.dealership_id = ${req.bondId}`;
+    } else if (req.isForeignBondUser) {
+      inventoryWhere = `WHERE foreign_bond_id = ${req.foreignBondId}`;
+      vehicleCondition = `WHERE v.foreign_bond_id = ${req.foreignBondId}`;
+    }
     
     const byStatus = db.query(`
       SELECT status, COUNT(*) as count
       FROM vehicles
-      ${dealershipCondition}
+      ${inventoryWhere}
       GROUP BY status
     `);
     
     const byMake = db.query(`
       SELECT make, COUNT(*) as count
       FROM vehicles
-      ${dealershipCondition}
+      ${inventoryWhere}
       GROUP BY make
       ORDER BY count DESC
       LIMIT 10
@@ -334,14 +446,14 @@ router.get('/analytics/inventory', auth, bondFilter, async (req, res) => {
       SELECT fb.country, COUNT(*) as count
       FROM vehicles v
       JOIN foreign_bonds fb ON v.foreign_bond_id = fb.id
-      ${bondCondition}
+      ${vehicleCondition}
       GROUP BY fb.country
     `);
     
     const avgPrice = db.query(`
       SELECT make, ROUND(AVG(purchase_price_usd), 2) as avg_price
-      FROM vehicles
-      ${bondCondition}
+      FROM vehicles v
+      ${vehicleCondition}
       GROUP BY make
       ORDER BY avg_price DESC
     `);

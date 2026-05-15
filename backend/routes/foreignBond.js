@@ -53,14 +53,18 @@ router.get('/:id', auth, async (req, res) => {
 // Get vehicles in foreign bond
 router.get('/:id/vehicles', auth, async (req, res) => {
   try {
-    const { status } = req.query;
+    const { status, orderable } = req.query;
     let query = `
       SELECT * FROM vehicles 
       WHERE foreign_bond_id = $1
     `;
     const params = [req.params.id];
     
-    if (status) {
+    if (orderable === 'true') {
+      // Show all vehicles with remaining stock quantity, regardless of dealership assignment
+      // A supplier can supply the same vehicle to multiple dealerships until quantity hits 0
+      query += ` AND quantity > 0 AND status NOT IN ('Sold', 'Reserved', 'Delivered', 'ordered')`;
+    } else if (status) {
       params.push(status);
       query += ` AND status = $${params.length}`;
     }

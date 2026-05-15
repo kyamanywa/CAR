@@ -2,6 +2,16 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const auth = require('../middleware/auth');
+const { getCurrencyConfig, getExchangeRates } = require('../config/currency');
+
+// Get system configuration (currencies, constants)
+router.get('/config', (req, res) => {
+  res.json({
+    currencies: getCurrencyConfig(),
+    exchange_rates: getExchangeRates(),
+    version: '1.0.0'
+  });
+});
 
 // Get system statistics (admin only)
 router.get('/stats', auth, async (req, res) => {
@@ -40,7 +50,7 @@ router.get('/stats', auth, async (req, res) => {
     // Get new dealerships in last 30 days
     const newDealerships = sqlDb.exec(`
       SELECT COUNT(*) as count FROM dealerships 
-      WHERE subscription_start >= date('now', '-30 days')
+      WHERE created_at >= date('now', '-30 days')
     `);
 
     const stats = {
@@ -141,6 +151,77 @@ router.get('/health', auth, async (req, res) => {
       status: 'unhealthy',
       error: error.message
     });
+  }
+});
+
+// Financial dashboard endpoint
+router.get('/financials', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const sqlDb = db.getDb();
+
+    // MRR: derive from plan price × billing cycle
+    const mrrResult = sqlDb.exec(`
+      SELECT
+        COALESCE(SUM(CASE
+          WHEN s.billing_cycle = 'yearly' THEN COALESCE(p.price_yearly,0)/12
+          ELSE COALESCE(p.price_monthly,0)
+        END), 0) as mrr,
+        COUNT(*) as active_subscriptions
+      FROM subscriptions s
+      LEFT JOIN subscription_plans p ON s.plan_id = p.id
+      WHERE s.status = 'active'
+    `);
+    const mrrRow = mrrResult[0]?.values[0] || [0, 0];
+
+    // Revenue by plan
+    const byPlanResult = sqlDb.exec(`
+      SELECT p.name as plan_name,
+             COUNT(s.id) as subscriber_count,
+             COALESCE(SUM(CASE
+               WHEN s.billing_cycle = 'yearly' THEN COALESCE(p.price_yearly,0)/12
+               ELSE COALESCE(p.price_monthly,0)
+             END), 0) as monthly_revenue,
+             COUNT(CASE WHEN s.billing_cycle = 'yearly' THEN 1 END) as yearly_count
+      FROM subscriptions s
+      JOIN subscription_plans p ON s.plan_id = p.id
+      WHERE s.status = 'active'
+      GROUP BY p.id, p.name
+      ORDER BY monthly_revenue DESC
+    `);
+    const by_plan = (byPlanResult[0]?.values || []).map(r => ({
+      plan_name: r[0], subscriber_count: r[1], monthly_revenue: r[2], yearly_count: r[3]
+    }));
+
+    // Upcoming expirations in 30 days
+    const expiryResult = sqlDb.exec(`
+      SELECT s.id, s.end_date, s.subscription_amount, p.name as plan_name,
+             COALESCE(d.name, fb.company_name, 'Unknown') as name
+      FROM subscriptions s
+      JOIN subscription_plans p ON s.plan_id = p.id
+      LEFT JOIN dealerships d ON s.dealership_id = d.id
+      LEFT JOIN foreign_bonds fb ON s.foreign_bond_id = fb.id
+      WHERE s.status = 'active'
+        AND s.end_date IS NOT NULL
+        AND date(s.end_date) <= date('now', '+30 days')
+        AND date(s.end_date) >= date('now')
+      ORDER BY s.end_date ASC
+    `);
+    const upcoming_expirations = (expiryResult[0]?.values || []).map(r => ({
+      id: r[0], end_date: r[1], subscription_amount: r[2], plan_name: r[3], name: r[4]
+    }));
+
+    res.json({ data: {
+      mrr: mrrRow[0],
+      active_subscriptions: mrrRow[1],
+      by_plan,
+      upcoming_expirations
+    }});
+  } catch (error) {
+    console.error('Error fetching financials:', error);
+    res.status(500).json({ error: 'Failed to fetch financial data' });
   }
 });
 

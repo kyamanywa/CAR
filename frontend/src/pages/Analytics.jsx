@@ -3,8 +3,62 @@ import { getSalesAnalytics, getImportAnalytics } from '../api';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { TrendingUp, Package, DollarSign, Car } from 'lucide-react';
 import { useAuth } from '../AuthContext';
+import { formatCurrency, getCurrencyConfig } from '../utils/currencyUtils';
 
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#14B8A6', '#F97316'];
+
+function normalizeSalesAnalytics(payload) {
+  if (!payload) {
+    return {
+      sales_over_time: [],
+      sales_by_make: [],
+      sales_by_model: [],
+      sales_by_color: [],
+      payment_status: []
+    };
+  }
+
+  return {
+    sales_over_time: payload.sales_over_time || payload.salesOverTime || [],
+    sales_by_make: payload.sales_by_make || payload.salesByMake || [],
+    sales_by_model: payload.sales_by_model || payload.salesByModel || [],
+    sales_by_color: payload.sales_by_color || payload.salesByColor || [],
+    payment_status: payload.payment_status || payload.paymentStatus || []
+  };
+}
+
+function normalizeImportAnalytics(payload) {
+  if (!payload) {
+    return {
+      orders_over_time: [],
+      orders_by_country: [],
+      orders_by_status: [],
+      avg_transit_days: null,
+      most_imported_makes: [],
+      most_imported_models: []
+    };
+  }
+
+  return {
+    orders_over_time: payload.orders_over_time || payload.ordersOverTime || [],
+    orders_by_country: payload.orders_by_country || payload.ordersByCountry || [],
+    orders_by_status: payload.orders_by_status || payload.ordersByStatus || [],
+    avg_transit_days: payload.avg_transit_days ?? payload.avgTransitDays ?? null,
+    most_imported_makes: payload.most_imported_makes || payload.mostImportedMakes || [],
+    most_imported_models: payload.most_imported_models || payload.mostImportedModels || []
+  };
+}
+
+function AnalyticsEmptyState({ title, description }) {
+  return (
+    <div className="card">
+      <div className="py-16 text-center">
+        <p className="text-lg font-semibold text-gray-700">{title}</p>
+        <p className="mt-2 text-sm text-gray-500">{description}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Analytics() {
   const { user } = useAuth();
@@ -25,21 +79,47 @@ export default function Analytics() {
         getSalesAnalytics({ period }),
         getImportAnalytics({ period })
       ]);
-      setSalesData(salesRes.data.data);
-      setImportData(importRes.data.data);
+      setSalesData(normalizeSalesAnalytics(salesRes.data.data));
+      setImportData(normalizeImportAnalytics(importRes.data.data));
     } catch (error) {
       console.error('Error:', error);
+      setSalesData(normalizeSalesAnalytics(null));
+      setImportData(normalizeImportAnalytics(null));
     } finally {
       setLoading(false);
     }
   };
 
+  const hasSalesData = Boolean(
+    salesData && (
+      salesData.sales_over_time.length ||
+      salesData.sales_by_make.length ||
+      salesData.sales_by_model.length ||
+      salesData.sales_by_color.length ||
+      salesData.payment_status.length
+    )
+  );
+
+  const hasImportData = Boolean(
+    importData && (
+      importData.orders_over_time.length ||
+      importData.orders_by_country.length ||
+      importData.orders_by_status.length ||
+      importData.avg_transit_days !== null ||
+      importData.most_imported_makes.length ||
+      importData.most_imported_models.length
+    )
+  );
+
+  const topSoldBrand = salesData?.sales_by_make?.[0] || null;
+  const topSoldModel = salesData?.sales_by_model?.[0] || null;
+  const topImportedBrand = importData?.most_imported_makes?.[0] || null;
+  const topImportedModel = importData?.most_imported_models?.[0] || null;
+  const localCode = getCurrencyConfig('local_sales').code;
+
   const formatUGX = (value) => {
     if (!value) return '0';
-    if (value >= 1000000000) return `${(value / 1000000000).toFixed(1)}B`;
-    if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
-    if (value >= 1000) return `${(value / 1000).toFixed(0)}K`;
-    return value.toString();
+    return Number(value).toLocaleString();
   };
 
   const formatDate = (dateStr) => {
@@ -105,8 +185,37 @@ export default function Analytics() {
         </button>
       </div>
 
-      {activeTab === 'sales' && salesData && (
+      {activeTab === 'sales' && salesData && hasSalesData && (
         <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="card">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Most Sold Brand</p>
+                  <p className="text-2xl font-bold text-gray-900">{topSoldBrand?.make || 'N/A'}</p>
+                  <p className="text-sm text-gray-600 mt-1">{topSoldBrand ? `${topSoldBrand.count} sales` : 'No data yet'}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                  <Car className="w-6 h-6" />
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Most Sold Car Type (Model)</p>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {topSoldModel ? `${topSoldModel.make} ${topSoldModel.model}` : 'N/A'}
+                  </p>
+                  <p className="text-sm text-gray-600 mt-1">{topSoldModel ? `${topSoldModel.count} sales` : 'No data yet'}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-emerald-50 text-emerald-600">
+                  <TrendingUp className="w-6 h-6" />
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Sales Over Time */}
           <div className="card">
             <h2 className="text-lg font-semibold mb-4">Sales Trend</h2>
@@ -119,7 +228,7 @@ export default function Analytics() {
                   <YAxis yAxisId="right" orientation="right" />
                   <Tooltip 
                     formatter={(value, name) => [
-                      name === 'revenue_ugx' || name === 'profit_ugx' ? `UGX ${formatUGX(value)}` : value,
+                      name === 'revenue_ugx' || name === 'profit_ugx' ? formatCurrency(value, 'local_sales') : value,
                       name === 'revenue_ugx' ? 'Revenue' : name === 'profit_ugx' ? 'Profit' : 'Sales'
                     ]}
                     labelFormatter={formatDate}
@@ -186,7 +295,7 @@ export default function Analytics() {
                 }`}>
                   <p className="text-sm text-gray-600">{status.payment_status}</p>
                   <p className="text-2xl font-bold">{status.count}</p>
-                  <p className="text-sm text-gray-500">UGX {formatUGX(status.amount)}</p>
+                  <p className="text-sm text-gray-500">{formatCurrency(status.amount, 'local_sales')}</p>
                 </div>
               ))}
             </div>
@@ -194,8 +303,47 @@ export default function Analytics() {
         </div>
       )}
 
-      {activeTab === 'imports' && importData && (
+      {activeTab === 'sales' && salesData && !hasSalesData && (
+        <AnalyticsEmptyState
+          title={user?.role === 'foreign_bond_user' ? 'Sales analytics do not apply to suppliers' : 'No sales analytics yet'}
+          description={user?.role === 'foreign_bond_user' ? 'Suppliers do not record local sales in this module.' : 'Record local vehicle sales and payments to populate revenue, profit, and payment analytics.'}
+        />
+      )}
+
+      {activeTab === 'imports' && importData && hasImportData && (
         <div className="space-y-6">
+          {user?.role === 'foreign_bond_user' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="card">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-500">Top Imported Brand</p>
+                    <p className="text-2xl font-bold text-gray-900">{topImportedBrand?.make || 'N/A'}</p>
+                    <p className="text-sm text-gray-600 mt-1">{topImportedBrand ? `${topImportedBrand.count} vehicles` : 'No data yet'}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-blue-50 text-blue-600">
+                    <Car className="w-6 h-6" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-500">Top Imported Car Type (Model)</p>
+                    <p className="text-2xl font-bold text-gray-900">
+                      {topImportedModel ? `${topImportedModel.make} ${topImportedModel.model}` : 'N/A'}
+                    </p>
+                    <p className="text-sm text-gray-600 mt-1">{topImportedModel ? `${topImportedModel.count} vehicles` : 'No data yet'}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-emerald-50 text-emerald-600">
+                    <Package className="w-6 h-6" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Orders Over Time */}
           <div className="card">
             <h2 className="text-lg font-semibold mb-4">Import Orders Trend</h2>
@@ -205,10 +353,10 @@ export default function Analytics() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="date" tickFormatter={formatDate} />
                   <YAxis yAxisId="left" />
-                  <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `$${formatUGX(v)}`} />
+                  <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => formatCurrency(v, 'import_orders')} />
                   <Tooltip 
                     formatter={(value, name) => [
-                      name === 'total_value_usd' ? `$${formatUGX(value)}` : value,
+                      name === 'total_value_usd' ? formatCurrency(value, 'import_orders') : value,
                       name === 'order_count' ? 'Orders' : name === 'vehicle_count' ? 'Vehicles' : 'Value'
                     ]}
                     labelFormatter={formatDate}
@@ -279,6 +427,13 @@ export default function Analytics() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'imports' && importData && !hasImportData && (
+        <AnalyticsEmptyState
+          title="No import analytics yet"
+          description="Create import orders, confirm them, and move them through shipping and border clearance to populate this dashboard."
+        />
       )}
     </div>
   );

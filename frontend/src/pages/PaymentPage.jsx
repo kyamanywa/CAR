@@ -1,56 +1,39 @@
 import { useState, useEffect } from 'react';
 import { fetchWithAuth } from '../api';
+import api from '../api';
 import { CreditCard, Smartphone, CheckCircle, AlertCircle, Crown, Zap } from 'lucide-react';
 
 export default function PaymentPage() {
-  const [plans] = useState([
-    {
-      id: 'starter',
-      name: 'Starter',
-      price: 49,
-      icon: <Zap className="w-6 h-6" />,
-      features: [
-        '50 vehicles',
-        '20 orders per month',
-        '3 team members',
-        'Email notifications',
-        'Basic reports'
-      ],
-      color: 'gray'
-    },
-    {
-      id: 'professional',
-      name: 'Professional',
-      price: 199,
-      icon: <CreditCard className="w-6 h-6" />,
-      features: [
-        '200 vehicles',
-        '100 orders per month',
-        '10 team members',
-        'Email & SMS notifications',
-        'Advanced analytics',
-        'Priority support'
-      ],
-      color: 'purple',
-      popular: true
-    },
-    {
-      id: 'enterprise',
-      name: 'Enterprise',
-      price: 499,
-      icon: <Crown className="w-6 h-6" />,
-      features: [
-        'Unlimited vehicles',
-        'Unlimited orders',
-        'Unlimited team members',
-        'All notifications',
-        'Custom reports',
-        'API access',
-        'Dedicated support'
-      ],
-      color: 'yellow'
-    }
-  ]);
+  const [plans, setPlans] = useState([]);
+  const [plansLoading, setPlansLoading] = useState(true);
+
+  useEffect(() => {
+    api.get('/subscriptions/plans?target_user_type=dealership')
+      .then(res => {
+        const dbPlans = (res.data.data || []).map((p, idx) => ({
+          id: p.name.toLowerCase(),
+          dbId: p.id,
+          name: p.name,
+          price: p.price_monthly,
+          features: [
+            p.max_vehicles >= 999999 ? 'Unlimited vehicles' : `${p.max_vehicles} vehicles`,
+            p.max_orders_per_month >= 999999 ? 'Unlimited orders/month' : `${p.max_orders_per_month} orders per month`,
+            p.max_users >= 999999 ? 'Unlimited team members' : `${p.max_users} team members`,
+            ...(p.description ? [p.description] : []),
+          ],
+          color: idx === 0 ? 'gray' : idx === 1 ? 'purple' : 'yellow',
+          popular: idx === 1,
+          icon: idx === 0 ? <Zap className="w-6 h-6" /> : idx === 1 ? <CreditCard className="w-6 h-6" /> : <Crown className="w-6 h-6" />,
+        }));
+        setPlans(dbPlans);
+        if (dbPlans.length > 0) {
+          const mid = dbPlans[Math.floor(dbPlans.length / 2)];
+          setSelectedPlan(mid.id);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setPlansLoading(false));
+  }, []);
 
   const [selectedPlan, setSelectedPlan] = useState('professional');
   const [paymentMethod, setPaymentMethod] = useState('mobile_money');
@@ -125,6 +108,11 @@ export default function PaymentPage() {
       </div>
 
       {/* Pricing Cards */}
+      {plansLoading ? (
+        <div className="flex justify-center items-center h-32">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {plans.map((plan) => (
           <div
@@ -174,6 +162,7 @@ export default function PaymentPage() {
           </div>
         ))}
       </div>
+      )}
 
       {/* Payment Method Selection */}
       <div className="card">
@@ -280,7 +269,7 @@ export default function PaymentPage() {
               Processing...
             </span>
           ) : (
-            `Pay $${plans.find(p => p.id === selectedPlan)?.price} - Activate Now`
+          `Pay $${plans.find(p => p.id === selectedPlan)?.price || 0} - Activate Now`
           )}
         </button>
 

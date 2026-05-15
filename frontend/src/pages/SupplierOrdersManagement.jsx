@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, Truck, Eye, AlertCircle, Clock, Package } from 'lucide-react';
+import { CheckCircle, Truck, Eye, AlertCircle, Clock, Package, Shield, MapPin } from 'lucide-react';
 import api from '../api';
 
 export default function SupplierOrdersManagement() {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedOrderDetail, setSelectedOrderDetail] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
   const [actionInProgress, setActionInProgress] = useState(false);
   const [filterStatus, setFilterStatus] = useState('all');
@@ -18,7 +19,7 @@ export default function SupplierOrdersManagement() {
     try {
       setLoading(true);
       const res = await api.get('/import-orders');
-      setOrders(res.data.data);
+      setOrders(res.data.data || []);
     } catch (error) {
       console.error('Error fetching orders:', error);
     } finally {
@@ -42,18 +43,54 @@ export default function SupplierOrdersManagement() {
   };
 
   const handleMarkShipped = async (orderId) => {
-    if (!confirm('Mark this order as shipped?')) return;
-    
+    handleUpdateStatus(orderId, 'Shipped', 'Mark this order as shipped?');
+  };
+
+  const handleUpdateStatus = async (orderId, status, confirmText) => {
+    if (!confirm(confirmText || `Update order status to ${status}?`)) return;
+
     try {
       setActionInProgress(true);
-      await api.patch(`/import-orders/${orderId}/status`, { status: 'Shipped' });
-      alert('Order marked as shipped!');
+      await api.patch(`/import-orders/${orderId}/status`, { status });
+      alert(`Order updated to ${status}`);
+      setShowDetails(false);
+      setSelectedOrder(null);
       fetchOrders();
     } catch (error) {
       alert(error.response?.data?.error || 'Failed to update order');
     } finally {
       setActionInProgress(false);
     }
+  };
+
+  const getNextStatusAction = (status) => {
+    const actions = {
+      Confirmed: {
+        next: 'Shipped',
+        label: 'Mark as Shipped',
+        icon: Truck,
+        className: 'bg-blue-600 hover:bg-blue-700'
+      },
+      Shipped: {
+        next: 'At Border',
+        label: 'Mark as At Border',
+        icon: Shield,
+        className: 'bg-indigo-600 hover:bg-indigo-700'
+      },
+      'At Border': {
+        next: 'Cleared',
+        label: 'Mark as Cleared',
+        icon: CheckCircle,
+        className: 'bg-emerald-600 hover:bg-emerald-700'
+      },
+      Cleared: {
+        next: 'Delivered',
+        label: 'Mark as Delivered',
+        icon: MapPin,
+        className: 'bg-green-600 hover:bg-green-700'
+      }
+    };
+    return actions[status] || null;
   };
 
   const getStatusBadge = (status) => {
@@ -100,7 +137,7 @@ export default function SupplierOrdersManagement() {
 
       {/* Status Filter */}
       <div className="flex gap-2">
-        {['all', 'Pending', 'Confirmed', 'Shipped', 'Delivered', 'Cancelled'].map(status => (
+        {['all', 'Pending', 'Confirmed', 'Shipped', 'At Border', 'Cleared', 'Delivered', 'Cancelled'].map(status => (
           <button
             key={status}
             onClick={() => setFilterStatus(status)}
@@ -142,9 +179,14 @@ export default function SupplierOrdersManagement() {
                     <p className="text-gray-500 text-sm">Created: {new Date(order.created_at).toLocaleDateString()}</p>
                   </div>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       setSelectedOrder(order);
+                      setSelectedOrderDetail(null);
                       setShowDetails(true);
+                      try {
+                        const res = await api.get(`/import-orders/${order.id}`);
+                        setSelectedOrderDetail(res.data.data);
+                      } catch (e) { console.error(e); }
                     }}
                     className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
                   >
@@ -179,20 +221,31 @@ export default function SupplierOrdersManagement() {
                       Confirm Order
                     </button>
                   )}
-                  {order.order_status === 'Confirmed' && (
+                  {getNextStatusAction(order.order_status) && (
                     <button
-                      onClick={() => handleMarkShipped(order.id)}
+                      onClick={() => {
+                        const action = getNextStatusAction(order.order_status);
+                        handleUpdateStatus(order.id, action.next, `Update order to "${action.next}"?`);
+                      }}
                       disabled={actionInProgress}
-                      className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+                      className={`flex-1 text-white px-4 py-2 rounded-lg disabled:bg-gray-400 ${getNextStatusAction(order.order_status).className}`}
                     >
-                      <Truck className="w-4 h-4 inline mr-2" />
-                      Mark as Shipped
+                      {(() => {
+                        const ActionIcon = getNextStatusAction(order.order_status).icon;
+                        return <ActionIcon className="w-4 h-4 inline mr-2" />;
+                      })()}
+                      {getNextStatusAction(order.order_status).label}
                     </button>
                   )}
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       setSelectedOrder(order);
+                      setSelectedOrderDetail(null);
                       setShowDetails(true);
+                      try {
+                        const res = await api.get(`/import-orders/${order.id}`);
+                        setSelectedOrderDetail(res.data.data);
+                      } catch (e) { console.error(e); }
                     }}
                     className="flex-1 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-300"
                   >
@@ -248,6 +301,31 @@ export default function SupplierOrdersManagement() {
                 </div>
               </div>
 
+              {/* Vehicles in this order */}
+              <div>
+                <h3 className="font-semibold mb-3">Vehicles Ordered</h3>
+                {!selectedOrderDetail ? (
+                  <p className="text-gray-500 text-sm">Loading vehicles...</p>
+                ) : selectedOrderDetail.vehicles?.length > 0 ? (
+                  <div className="space-y-2">
+                    {selectedOrderDetail.vehicles.map((v) => (
+                      <div key={v.id} className="flex justify-between items-center bg-gray-50 p-3 rounded text-sm">
+                        <div>
+                          <p className="font-semibold">{v.year} {v.make} {v.model}</p>
+                          <p className="text-gray-500">{v.color} · {v.engine_cc}cc · {v.fuel_type}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-semibold">Qty: {v.ordered_quantity || 1}</p>
+                          <p className="text-gray-600">${((parseFloat(v.sale_price_usd) || 0) * (v.ordered_quantity || 1)).toLocaleString()}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-sm">No vehicle details available</p>
+                )}
+              </div>
+
               {/* Notes */}
               {selectedOrder.notes && (
                 <div>
@@ -270,16 +348,16 @@ export default function SupplierOrdersManagement() {
                     Confirm Order
                   </button>
                 )}
-                {selectedOrder.order_status === 'Confirmed' && (
+                {getNextStatusAction(selectedOrder.order_status) && (
                   <button
                     onClick={() => {
-                      handleMarkShipped(selectedOrder.id);
-                      setShowDetails(false);
+                      const action = getNextStatusAction(selectedOrder.order_status);
+                      handleUpdateStatus(selectedOrder.id, action.next, `Update order to "${action.next}"?`);
                     }}
                     disabled={actionInProgress}
-                    className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+                    className={`flex-1 text-white px-4 py-2 rounded-lg ${getNextStatusAction(selectedOrder.order_status).className}`}
                   >
-                    Mark as Shipped
+                    {getNextStatusAction(selectedOrder.order_status).label}
                   </button>
                 )}
                 <button

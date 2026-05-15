@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, X, Package, DollarSign, Calendar, MapPin, Edit2, Save, ChevronDown, ChevronRight, Filter, Trash2 } from 'lucide-react';
-import { getMyVehicles, updateMyVehicle, deleteMyVehicle, getMakes, getModels, getColors } from '../api';
+import { Plus, Search, X, Package, DollarSign, Calendar, MapPin, Edit2, Save, ChevronDown, ChevronRight, Filter, Trash2, Camera } from 'lucide-react';
+import { getMyVehicles, updateMyVehicle, deleteMyVehicle, getMakes, getModels, getColors, uploadVehicleImage } from '../api';
+import VehicleDetailModal from '../components/VehicleDetailModal';
 
 export default function SupplierInventory() {
   const navigate = useNavigate();
@@ -11,6 +12,8 @@ export default function SupplierInventory() {
   const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [editMode, setEditMode] = useState(false);
   const [editForm, setEditForm] = useState(null);
+  const [editImagePreview, setEditImagePreview] = useState('');
+  const [editImageUploading, setEditImageUploading] = useState(false);
   const [viewMode, setViewMode] = useState('grouped'); // 'grouped' or 'list'
   const [expandedMakes, setExpandedMakes] = useState({});
   const [expandedModels, setExpandedModels] = useState({});
@@ -120,6 +123,27 @@ export default function SupplierInventory() {
       purchase_price: vehicle.purchase_price_usd || vehicle.purchase_price || 0,
       sale_price: vehicle.sale_price_usd || vehicle.sale_price || 0
     });
+    setEditImagePreview(vehicle.image_url ? vehicle.image_url : '');
+  };
+
+  const handleEditImageChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setEditImagePreview(URL.createObjectURL(file));
+    setEditImageUploading(true);
+    try {
+      const res = await uploadVehicleImage(file);
+      setEditForm(prev => ({ ...prev, image_url: res.data.data.image_url }));
+    } catch (err) {
+      alert('Image upload failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setEditImageUploading(false);
+    }
+  };
+
+  const handleRemoveEditImage = () => {
+    setEditImagePreview('');
+    setEditForm(prev => ({ ...prev, image_url: '' }));
   };
 
   const handleEditChange = (e) => {
@@ -356,6 +380,7 @@ export default function SupplierInventory() {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chassis</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Photo</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Vehicle</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Year</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Color</th>
@@ -372,6 +397,12 @@ export default function SupplierInventory() {
                     onClick={() => setSelectedVehicle(vehicle)}
                   >
                     <td className="px-6 py-4 text-sm font-mono text-blue-600">{vehicle.chassis_number}</td>
+                    <td className="px-6 py-4">
+                      {vehicle.image_url
+                        ? <img src={vehicle.image_url} alt="" className="h-10 w-14 rounded object-cover border" />
+                        : <div className="h-10 w-14 rounded bg-gray-100 flex items-center justify-center"><Package className="w-4 h-4 text-gray-400" /></div>
+                      }
+                    </td>
                     <td className="px-6 py-4 text-sm font-semibold">{vehicle.make} {vehicle.model}</td>
                     <td className="px-6 py-4 text-sm">{vehicle.year}</td>
                     <td className="px-6 py-4 text-sm">{vehicle.color || 'N/A'}</td>
@@ -401,14 +432,22 @@ export default function SupplierInventory() {
         </div>
       )}
 
-      {/* Vehicle Detail Modal */}
-      {selectedVehicle && (
+      {/* Enhanced Vehicle Detail Modal */}
+      {selectedVehicle && !editMode && (
+        <VehicleDetailModal 
+          vehicle={selectedVehicle} 
+          onClose={() => setSelectedVehicle(null)} 
+        />
+      )}
+
+      {/* Edit Vehicle Modal */}
+      {selectedVehicle && editMode && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b flex justify-between items-start">
               <div>
-                <h2 className="text-2xl font-bold">{editMode ? 'Edit Vehicle' : `${selectedVehicle.make} ${selectedVehicle.model}`}</h2>
-                <p className="text-gray-600 mt-1">Year: {selectedVehicle.year}</p>
+                <h2 className="text-2xl font-bold">Edit Vehicle</h2>
+                <p className="text-gray-600 mt-1">{selectedVehicle.make} {selectedVehicle.model} - {selectedVehicle.year}</p>
               </div>
               <button
                 onClick={() => { setSelectedVehicle(null); setEditMode(false); }}
@@ -419,125 +458,6 @@ export default function SupplierInventory() {
             </div>
 
             <div className="p-6 space-y-6">
-              {!editMode ? (
-                <>
-              {/* Status Badge */}
-              <div>
-                <span className={`px-4 py-2 rounded-full text-sm font-medium inline-flex items-center gap-2 ${
-                  selectedVehicle.status === 'Available' ? 'bg-green-100 text-green-800' :
-                  selectedVehicle.status === 'ordered' ? 'bg-blue-100 text-blue-800' :
-                  'bg-gray-100 text-gray-800'
-                }`}>
-                  <Package className="w-4 h-4" />
-                  {selectedVehicle.status}
-                </span>
-                {selectedVehicle.quantity > 1 && (
-                  <span className="ml-3 px-4 py-2 bg-blue-50 text-blue-700 rounded-full text-sm font-medium">
-                    {selectedVehicle.quantity} units in stock
-                  </span>
-                )}
-              </div>
-
-              {/* Vehicle Identification */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-sm text-gray-600">Chassis Number</p>
-                  <p className="text-lg font-mono font-bold mt-1">{selectedVehicle.chassis_number}</p>
-                </div>
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-sm text-gray-600">Engine Number</p>
-                  <p className="text-lg font-mono font-bold mt-1">{selectedVehicle.engine_number || 'N/A'}</p>
-                </div>
-              </div>
-
-              {/* Pricing Information */}
-              <div>
-                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                  <DollarSign className="w-5 h-5" />
-                  Pricing Details
-                </h3>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="bg-orange-50 p-4 rounded-lg">
-                    <p className="text-sm text-orange-600">Purchase Cost</p>
-                    <p className="text-xl font-bold mt-1">${parseFloat(selectedVehicle.purchase_price_usd || 0).toLocaleString()}</p>
-                  </div>
-                  <div className="bg-blue-50 p-4 rounded-lg">
-                    <p className="text-sm text-blue-600">Sale Price</p>
-                    <p className="text-xl font-bold mt-1">${parseFloat(selectedVehicle.sale_price_usd || 0).toLocaleString()}</p>
-                  </div>
-                  <div className="bg-green-50 p-4 rounded-lg">
-                    <p className="text-sm text-green-600">Expected Profit</p>
-                    <p className="text-xl font-bold mt-1 text-green-600">
-                      ${(parseFloat(selectedVehicle.sale_price_usd || 0) - parseFloat(selectedVehicle.purchase_price_usd || 0)).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Vehicle Specifications */}
-              <div>
-                <h3 className="text-lg font-semibold mb-3">Specifications</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-600">Make</p>
-                    <p className="font-semibold">{selectedVehicle.make}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Model</p>
-                    <p className="font-semibold">{selectedVehicle.model}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Year</p>
-                    <p className="font-semibold">{selectedVehicle.year}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Color</p>
-                    <p className="font-semibold">{selectedVehicle.color || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Steering</p>
-                    <p className="font-semibold">{selectedVehicle.steering || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Fuel Type</p>
-                    <p className="font-semibold">{selectedVehicle.fuel_type || 'N/A'}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Location & Dates */}
-              <div>
-                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                  <MapPin className="w-5 h-5" />
-                  Location & Timeline
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-sm text-gray-600">Location</p>
-                    <p className="font-semibold">{selectedVehicle.location || 'N/A'}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600 flex items-center gap-1">
-                      <Calendar className="w-4 h-4" />
-                      Added Date
-                    </p>
-                    <p className="font-semibold">
-                      {selectedVehicle.created_at ? new Date(selectedVehicle.created_at).toLocaleDateString() : 'N/A'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Additional Information */}
-              {selectedVehicle.notes && (
-                <div>
-                  <h3 className="text-lg font-semibold mb-2">Notes</h3>
-                  <p className="text-gray-700 bg-gray-50 p-4 rounded-lg">{selectedVehicle.notes}</p>
-                </div>
-              )}
-              </>
-              ) : (
-                /* Edit Form */
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -615,6 +535,35 @@ export default function SupplierInventory() {
                         <option value="sold">Sold</option>
                       </select>
                     </div>
+                  </div>
+
+                  {/* Vehicle Photo */}
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Vehicle Photo</label>
+                    {editImagePreview ? (
+                      <div className="relative inline-block">
+                        <img src={editImagePreview} alt="Vehicle" className="w-48 h-36 object-cover rounded-lg border" />
+                        <button
+                          type="button"
+                          onClick={handleRemoveEditImage}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <label className="flex flex-col items-center justify-center w-48 h-36 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50">
+                        {editImageUploading ? (
+                          <div className="text-sm text-gray-500">Uploading...</div>
+                        ) : (
+                          <>
+                            <Camera className="w-8 h-8 text-gray-400 mb-1" />
+                            <span className="text-xs text-gray-500">Click to upload photo</span>
+                          </>
+                        )}
+                        <input type="file" className="hidden" accept="image/*" onChange={handleEditImageChange} disabled={editImageUploading} />
+                      </label>
+                    )}
                   </div>
                 </div>
               )}

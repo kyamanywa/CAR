@@ -2,9 +2,15 @@ import { useState, useEffect } from 'react';
 import { getSales, getSalesStats, getSale, createSale, updateSalePayment, deleteSale } from '../api';
 import { getCustomers } from '../api';
 import { getVehicles } from '../api';
-import { DollarSign, TrendingUp, Users, AlertCircle, X, Car, User, FileText, Plus, Edit, Trash2 } from 'lucide-react';
+import { DollarSign, TrendingUp, Users, AlertCircle, X, Car, User, FileText, Plus, Edit, Trash2, Printer, Download } from 'lucide-react';
+import PrintableInvoice from '../components/PrintableInvoice';
+import { formatCurrency, getCurrencyConfig, getExchangeRate } from '../utils/currencyUtils';
+import { exportToExcel } from '../utils/exportData';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 export default function Sales() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [sales, setSales] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -12,6 +18,8 @@ export default function Sales() {
   const [selectedSale, setSelectedSale] = useState(null);
   const [saleDetail, setSaleDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showPrintable, setShowPrintable] = useState(false);
+  const [pendingOpenSaleId, setPendingOpenSaleId] = useState(location.state?.openSaleId || null);
   
   // Create/Edit modal state
   const [showForm, setShowForm] = useState(false);
@@ -21,18 +29,30 @@ export default function Sales() {
   const [formData, setFormData] = useState({
     customer_id: '',
     vehicle_id: '',
+    quantity: 1,
     selling_price_ugx: '',
     amount_paid_ugx: '',
     payment_status: 'Pending',
     payment_method: 'Cash',
     notes: ''
   });
+  const localSalesCurrencyCode = getCurrencyConfig('local_sales').code;
 
   useEffect(() => {
     fetchData();
     fetchCustomers();
     fetchVehicles();
   }, [filter]);
+
+  useEffect(() => {
+    if (!pendingOpenSaleId || sales.length === 0) return;
+    const sale = sales.find(s => Number(s.id) === Number(pendingOpenSaleId));
+    if (sale) {
+      handleViewSale(sale);
+      setPendingOpenSaleId(null);
+      navigate('/sales', { replace: true, state: {} });
+    }
+  }, [pendingOpenSaleId, sales]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -62,9 +82,10 @@ export default function Sales() {
 
   const fetchVehicles = async () => {
     try {
-      // Get only In Stock vehicles for sale
-      const res = await getVehicles({ status: 'In Stock' });
-      setVehicles(res.data.data);
+      // Get both imported ('In Stock') and local ('Available') vehicles
+      const res = await getVehicles();
+      const available = (res.data.data || []).filter(v => v.status === 'In Stock' || v.status === 'Available');
+      setVehicles(available);
     } catch (error) {
       console.error('Error fetching vehicles:', error);
     }
@@ -88,10 +109,15 @@ export default function Sales() {
     setFormData({
       customer_id: '',
       vehicle_id: '',
+      quantity: 1,
       selling_price_ugx: '',
       amount_paid_ugx: '',
       payment_status: 'Pending',
       payment_method: 'Cash',
+      discount_ugx: '',
+      trade_in_vehicle: '',
+      trade_in_value_ugx: '',
+      salesperson_name: '',
       notes: ''
     });
     setShowForm(true);
@@ -123,10 +149,15 @@ export default function Sales() {
         await createSale({
           customer_id: parseInt(formData.customer_id),
           vehicle_id: parseInt(formData.vehicle_id),
+          quantity: parseInt(formData.quantity) || 1,
           selling_price_ugx: parseFloat(formData.selling_price_ugx),
-          amount_paid_ugx: parseFloat(formData.amount_paid_ugx),
+          amount_paid_ugx: parseFloat(formData.amount_paid_ugx) || 0,
           payment_status: formData.payment_status,
           payment_method: formData.payment_method,
+          discount_ugx: parseFloat(formData.discount_ugx) || 0,
+          trade_in_vehicle: formData.trade_in_vehicle || '',
+          trade_in_value_ugx: parseFloat(formData.trade_in_value_ugx) || 0,
+          salesperson_name: formData.salesperson_name || '',
           notes: formData.notes
         });
         alert('Sale created successfully!');
@@ -159,9 +190,11 @@ export default function Sales() {
     
     // Auto-fill selling price based on vehicle cost
     const vehicle = vehicles.find(v => v.id === parseInt(vehicleId));
-    if (vehicle && vehicle.total_cost_ugx) {
+    if (vehicle && (vehicle.total_cost_ugx || vehicle.purchase_price_usd)) {
+      const exchangeRate = getExchangeRate('usd_to_ugx') || 3750;
+      const baseCost = vehicle.total_cost_ugx || ((parseFloat(vehicle.purchase_price_usd) || 0) * exchangeRate);
       // Suggest 15% markup
-      const suggestedPrice = Math.round(vehicle.total_cost_ugx * 1.15);
+      const suggestedPrice = Math.round(baseCost * 1.15);
       setFormData(prev => ({ 
         ...prev, 
         vehicle_id: vehicleId,
@@ -170,12 +203,24 @@ export default function Sales() {
     }
   };
 
-  const formatUGX = (value) => {
-    if (!value) return 'UGX 0';
-    if (value >= 1000000000) return `UGX ${(value / 1000000000).toFixed(2)}B`;
-    if (value >= 1000000) return `UGX ${(value / 1000000).toFixed(1)}M`;
-    return `UGX ${value.toLocaleString()}`;
-  };
+  const formatLocalMoney = (value) => formatCurrency(value, 'local_sales');
+
+  const selectedVehicleData = vehicles.find(v => v.id === parseInt(formData.vehicle_id));
+  const saleQty = parseInt(formData.quantity) || 1;
+  const unitSalePrice = parseFloat(formData.selling_price_ugx) || 0;
+  const discountAmt = parseFloat(formData.discount_ugx) || 0;
+  const tradeInAmt = parseFloat(formData.trade_in_value_ugx) || 0;
+  const exchangeRate = getExchangeRate('usd_to_ugx') || 3750;
+  const unitCostUgx = selectedVehicleData
+    ? (parseFloat(selectedVehicleData.total_cost_ugx) || ((parseFloat(selectedVehicleData.purchase_price_usd) || 0) * exchangeRate))
+    : 0;
+  const grossSaleAmount = unitSalePrice * saleQty;
+  const netSaleAmount = Math.max(0, grossSaleAmount - discountAmt - tradeInAmt);
+  const totalCostAmount = unitCostUgx * saleQty;
+  const projectedProfit = netSaleAmount - totalCostAmount;
+  const projectedMarginPct = netSaleAmount > 0 ? (projectedProfit / netSaleAmount) * 100 : 0;
+  const paymentAmount = parseFloat(formData.amount_paid_ugx) || 0;
+  const projectedBalance = Math.max(0, netSaleAmount - paymentAmount);
 
   const statuses = ['Paid', 'Partial', 'Pending'];
 
@@ -198,6 +243,27 @@ export default function Sales() {
           <button onClick={handleCreateSale} className="btn btn-primary flex items-center gap-2">
             <Plus className="w-4 h-4" />
             New Sale
+          </button>
+          <button
+            onClick={() => exportToExcel(sales.map(s => ({
+              Invoice: s.invoice_number,
+              Date: s.sale_date,
+              Customer: s.customer_name,
+              Vehicle: `${s.make} ${s.model} ${s.year}`,
+              Chassis: s.chassis_number,
+              'Sale Price (UGX)': s.selling_price_ugx,
+              'Cost (UGX)': s.total_cost_ugx,
+              'Profit (UGX)': (parseFloat(s.selling_price_ugx || 0) - parseFloat(s.total_cost_ugx || 0)),
+              'Margin %': (parseFloat(s.selling_price_ugx || 0) > 0
+                ? (((parseFloat(s.selling_price_ugx || 0) - parseFloat(s.total_cost_ugx || 0)) / parseFloat(s.selling_price_ugx || 0)) * 100).toFixed(2)
+                : '0.00'),
+              'Amount Paid (UGX)': s.amount_paid_ugx,
+              'Balance (UGX)': s.balance_ugx,
+              Status: s.payment_status,
+            })), `sales-${new Date().toISOString().slice(0,10)}`, 'Sales')}
+            className="flex items-center gap-2 px-3 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
+          >
+            <Download size={14} /> Export
           </button>
         </div>
       </div>
@@ -223,7 +289,7 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">Revenue</p>
-                <p className="text-xl font-bold">{formatUGX(stats.total_revenue)}</p>
+                <p className="text-xl font-bold">{formatLocalMoney(stats.total_revenue)}</p>
               </div>
             </div>
           </div>
@@ -234,7 +300,7 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">Profit</p>
-                <p className="text-xl font-bold">{formatUGX(stats.total_profit)}</p>
+                <p className="text-xl font-bold">{formatLocalMoney(stats.total_profit)}</p>
               </div>
             </div>
           </div>
@@ -245,7 +311,7 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-sm text-gray-500">Outstanding</p>
-                <p className="text-xl font-bold">{formatUGX(stats.outstanding)}</p>
+                <p className="text-xl font-bold">{formatLocalMoney(stats.outstanding)}</p>
               </div>
             </div>
           </div>
@@ -264,7 +330,7 @@ export default function Sales() {
                 <th className="text-left p-4 text-sm font-medium text-gray-600">Invoice</th>
                 <th className="text-left p-4 text-sm font-medium text-gray-600">Vehicle</th>
                 <th className="text-left p-4 text-sm font-medium text-gray-600">Customer</th>
-                <th className="text-right p-4 text-sm font-medium text-gray-600">Amount</th>
+                <th className="text-right p-4 text-sm font-medium text-gray-600">Financials</th>
                 <th className="text-left p-4 text-sm font-medium text-gray-600">Status</th>
                 <th className="text-right p-4 text-sm font-medium text-gray-600">Actions</th>
               </tr>
@@ -277,7 +343,13 @@ export default function Sales() {
                   </td>
                 </tr>
               ) : (
-                sales.map((sale) => (
+                sales.map((sale) => {
+                  const rowRevenue = parseFloat(sale.selling_price_ugx || 0);
+                  const rowCost = parseFloat(sale.total_cost_ugx || 0);
+                  const rowProfit = rowRevenue - rowCost;
+                  const rowMarginPct = rowRevenue > 0 ? (rowProfit / rowRevenue) * 100 : 0;
+
+                  return (
                   <tr key={sale.id} className="hover:bg-gray-50">
                     <td className="p-4">
                       <p className="font-medium">{sale.invoice_number}</p>
@@ -294,8 +366,11 @@ export default function Sales() {
                       <p className="text-xs text-gray-500">{sale.customer_phone}</p>
                     </td>
                     <td className="p-4 text-right">
-                      <p className="font-medium">{formatUGX(sale.selling_price_ugx)}</p>
-                      <p className="text-xs text-gray-500">Paid: {formatUGX(sale.amount_paid_ugx)}</p>
+                      <p className="font-medium">{formatLocalMoney(sale.selling_price_ugx)}</p>
+                      <p className="text-xs text-gray-500">Paid: {formatLocalMoney(sale.amount_paid_ugx)}</p>
+                      <p className={`text-xs font-medium ${rowProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        Profit: {formatLocalMoney(rowProfit)} ({rowMarginPct.toFixed(2)}%)
+                      </p>
                     </td>
                     <td className="p-4">
                       <span className={`badge ${
@@ -330,7 +405,7 @@ export default function Sales() {
                       </div>
                     </td>
                   </tr>
-                ))
+                )})
               )}
             </tbody>
           </table>
@@ -381,7 +456,7 @@ export default function Sales() {
                         <option value="">Select Vehicle</option>
                         {vehicles.map(v => (
                           <option key={v.id} value={v.id}>
-                            {v.make} {v.model} ({v.year}) - {v.chassis_number}
+                            [{v.source_type === 'local_purchase' || v.source_type === 'local' ? 'Local' : 'Imported'}] {v.make} {v.model} ({v.year}) - {v.chassis_number}
                           </option>
                         ))}
                       </select>
@@ -391,9 +466,44 @@ export default function Sales() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-4">
                     <div>
-                      <label className="label">Selling Price (UGX) *</label>
+                      <label className="label">Quantity *</label>
+                      <input
+                        type="number"
+                        required
+                        value={formData.quantity}
+                        onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                        className="input"
+                        placeholder="1"
+                        min="1"
+                        max={vehicles.find(v => v.id === parseInt(formData.vehicle_id))?.quantity || 999}
+                      />
+                      {formData.vehicle_id && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Available: {vehicles.find(v => v.id === parseInt(formData.vehicle_id))?.quantity || 0} units
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="col-span-2">
+                      <label className="label">Unit Price ({localSalesCurrencyCode}) *</label>
+                      <input
+                        type="number"
+                        required
+                        value={formData.selling_price_ugx}
+                        onChange={(e) => setFormData({ ...formData, selling_price_ugx: e.target.value })}
+                        className="input"
+                        placeholder="0"
+                        min="0"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Price per vehicle unit</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div style={{display: 'none'}}>
+                      <label className="label">Selling Price ({localSalesCurrencyCode}) *</label>
                       <input
                         type="number"
                         required
@@ -406,7 +516,99 @@ export default function Sales() {
                     </div>
                     
                     <div>
-                      <label className="label">Amount Paid (UGX) *</label>
+                      <label className="label">Discount ({localSalesCurrencyCode})</label>
+                      <input
+                        type="number"
+                        value={formData.discount_ugx}
+                        onChange={(e) => setFormData({ ...formData, discount_ugx: e.target.value })}
+                        className="input"
+                        placeholder="0"
+                        min="0"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Trade-in Vehicle */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Trade-in Vehicle (optional)</label>
+                      <input
+                        type="text"
+                        value={formData.trade_in_vehicle}
+                        onChange={(e) => setFormData({ ...formData, trade_in_vehicle: e.target.value })}
+                        className="input"
+                        placeholder="e.g. Toyota Corolla 2018"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Trade-in Value ({localSalesCurrencyCode})</label>
+                      <input
+                        type="number"
+                        value={formData.trade_in_value_ugx}
+                        onChange={(e) => setFormData({ ...formData, trade_in_value_ugx: e.target.value })}
+                        className="input"
+                        placeholder="0"
+                        min="0"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Pricing & Profitability summary */}
+                  {formData.selling_price_ugx && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <p className="font-semibold text-blue-700 mb-2">Sale Breakdown</p>
+                        <div className="flex justify-between">
+                          <span>Unit Price × Quantity:</span>
+                          <span>{unitSalePrice.toLocaleString()} × {saleQty} = {grossSaleAmount.toLocaleString()} {localSalesCurrencyCode}</span>
+                        </div>
+                        {discountAmt > 0 && (
+                          <div className="flex justify-between text-green-700">
+                            <span>Discount:</span>
+                            <span>- {discountAmt.toLocaleString()} {localSalesCurrencyCode}</span>
+                          </div>
+                        )}
+                        {tradeInAmt > 0 && (
+                          <div className="flex justify-between text-green-700">
+                            <span>Trade-in:</span>
+                            <span>- {tradeInAmt.toLocaleString()} {localSalesCurrencyCode}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between font-bold border-t mt-1 pt-1">
+                          <span>Net Sale Total:</span>
+                          <span>{netSaleAmount.toLocaleString()} {localSalesCurrencyCode}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                        <p className="font-semibold text-emerald-700 mb-2">Cost & Margin Preview</p>
+                        <div className="flex justify-between">
+                          <span>Unit Cost (est.):</span>
+                          <span>{unitCostUgx.toLocaleString()} {localSalesCurrencyCode}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Total Cost:</span>
+                          <span>{totalCostAmount.toLocaleString()} {localSalesCurrencyCode}</span>
+                        </div>
+                        <div className="flex justify-between font-semibold">
+                          <span>Projected Profit:</span>
+                          <span className={projectedProfit >= 0 ? 'text-emerald-700' : 'text-red-700'}>
+                            {projectedProfit.toLocaleString()} {localSalesCurrencyCode}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Margin %:</span>
+                          <span className={projectedMarginPct >= 0 ? 'text-emerald-700 font-semibold' : 'text-red-700 font-semibold'}>
+                            {projectedMarginPct.toFixed(2)}%
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="label">Amount Paid ({localSalesCurrencyCode}) *</label>
                       <input
                         type="number"
                         required
@@ -415,6 +617,16 @@ export default function Sales() {
                         className="input"
                         placeholder="0"
                         min="0"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Salesperson Name</label>
+                      <input
+                        type="text"
+                        value={formData.salesperson_name}
+                        onChange={(e) => setFormData({ ...formData, salesperson_name: e.target.value })}
+                        className="input"
+                        placeholder="Name of staff"
                       />
                     </div>
                   </div>
@@ -447,18 +659,25 @@ export default function Sales() {
                       </select>
                     </div>
                   </div>
+
+                  {formData.selling_price_ugx && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm flex justify-between">
+                      <span className="text-amber-700 font-medium">Projected Balance After Payment</span>
+                      <span className="font-bold text-amber-800">{projectedBalance.toLocaleString()} {localSalesCurrencyCode}</span>
+                    </div>
+                  )}
                 </>
               ) : (
                 <>
                   {/* Update Payment Form */}
                   <div className="bg-blue-50 p-4 rounded-lg mb-4">
                     <p className="text-sm text-gray-600">Outstanding Balance:</p>
-                    <p className="text-2xl font-bold text-blue-600">{formatUGX(editingSale.balance)}</p>
+                    <p className="text-2xl font-bold text-blue-600">{formatLocalMoney(editingSale.balance)}</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="label">Payment Amount (UGX) *</label>
+                      <label className="label">Payment Amount ({localSalesCurrencyCode}) *</label>
                       <input
                         type="number"
                         required
@@ -532,7 +751,13 @@ export default function Sales() {
               <div className="p-8 flex items-center justify-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
               </div>
-            ) : saleDetail && (
+            ) : saleDetail && (() => {
+              const detailRevenue = parseFloat(saleDetail.selling_price_ugx || 0);
+              const detailCost = parseFloat(saleDetail.total_cost_ugx || 0);
+              const detailProfit = detailRevenue - detailCost;
+              const detailMarginPct = detailRevenue > 0 ? (detailProfit / detailRevenue) * 100 : 0;
+
+              return (
               <div className="p-6 space-y-6">
                 {/* Customer Info */}
                 <div className="flex items-start gap-3">
@@ -562,17 +787,56 @@ export default function Sales() {
 
                 {/* Financial Details */}
                 <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                  {saleDetail.quantity && saleDetail.quantity > 1 && (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Quantity:</span>
+                        <span className="font-medium">{saleDetail.quantity} units</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Unit Price:</span>
+                        <span className="font-medium">{formatLocalMoney(saleDetail.unit_price_ugx || (saleDetail.selling_price_ugx / saleDetail.quantity))}</span>
+                      </div>
+                      <div className="flex justify-between text-sm text-gray-500">
+                        <span>Subtotal ({saleDetail.quantity} × {formatLocalMoney(saleDetail.unit_price_ugx || (saleDetail.selling_price_ugx / saleDetail.quantity))}):</span>
+                        <span>{formatLocalMoney(saleDetail.selling_price_ugx)}</span>
+                      </div>
+                      <div className="border-t pt-2"></div>
+                    </>
+                  )}
+                  {(!saleDetail.quantity || saleDetail.quantity === 1) && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Quantity:</span>
+                      <span className="font-medium">1 unit</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-600">Selling Price:</span>
-                    <span className="font-medium">{formatUGX(saleDetail.selling_price_ugx)}</span>
+                    <span className="font-medium">{formatLocalMoney(saleDetail.selling_price_ugx)}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Amount Paid:</span>
-                    <span className="font-medium text-green-600">{formatUGX(saleDetail.amount_paid_ugx)}</span>
+                    <span className="font-medium text-green-600">{formatLocalMoney(saleDetail.amount_paid_ugx)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Total Cost:</span>
+                    <span className="font-medium">{formatLocalMoney(detailCost)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Profit:</span>
+                    <span className={`font-semibold ${detailProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                      {formatLocalMoney(detailProfit)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Margin %:</span>
+                    <span className={`font-semibold ${detailMarginPct >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                      {detailMarginPct.toFixed(2)}%
+                    </span>
                   </div>
                   <div className="flex justify-between pt-2 border-t">
                     <span className="text-gray-600">Balance:</span>
-                    <span className="font-bold text-lg">{formatUGX(saleDetail.balance)}</span>
+                    <span className="font-bold text-lg">{formatLocalMoney(saleDetail.balance)}</span>
                   </div>
                 </div>
 
@@ -599,10 +863,43 @@ export default function Sales() {
                     <p className="text-sm bg-gray-50 p-3 rounded">{saleDetail.notes}</p>
                   </div>
                 )}
+
+                {/* Action Buttons */}
+                <div className="flex gap-2 pt-4 border-t">
+                  <button
+                    onClick={() => setShowPrintable(true)}
+                    className="flex items-center gap-2 flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 justify-center"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print Invoice
+                  </button>
+                </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
+      )}
+
+      {/* Printable Invoice Modal */}
+      {showPrintable && saleDetail && (
+        <PrintableInvoice
+          invoice={{
+            ...saleDetail,
+            invoice_number: selectedSale?.invoice_number,
+            sale_date: selectedSale?.sale_date,
+            customer_name: saleDetail.customer_name,
+            selling_price_ugx: saleDetail.selling_price_ugx,
+            total_cost_ugx: saleDetail.total_cost_ugx,
+            profit_ugx: (parseFloat(saleDetail.selling_price_ugx || 0) - parseFloat(saleDetail.total_cost_ugx || 0)),
+            amount_paid_ugx: saleDetail.amount_paid_ugx,
+            balance_ugx: saleDetail.balance,
+            payment_status: saleDetail.payment_status,
+            item_name: `${saleDetail.make} ${saleDetail.model} ${saleDetail.year}`
+          }}
+          type="sales"
+          onClose={() => setShowPrintable(false)}
+        />
       )}
     </div>
   );

@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { getFinancialSummary, getInventoryReport, getImportOrdersReport } from '../api';
 import { useAuth } from '../AuthContext';
+import { formatCurrency, getCurrencyConfig } from '../utils/currencyUtils';
+import { exportToExcel } from '../utils/exportData';
+import { Download } from 'lucide-react';
 
 export default function Reports() {
   const { user } = useAuth();
@@ -35,30 +38,73 @@ export default function Reports() {
     }
   };
 
-  const formatMoney = (amount) => {
-    return new Intl.NumberFormat('en-UG', {
-      style: 'currency',
-      currency: 'UGX',
-      minimumFractionDigits: 0
-    }).format(amount || 0);
+  const localCode = getCurrencyConfig('local_sales').code;
+  const importCode = getCurrencyConfig('import_orders').code;
+  const formatMoney = (amount) => formatCurrency(amount, 'local_sales');
+  const formatMoneyUSD = (amount) => formatCurrency(amount, 'import_orders');
+
+  const handleExportFinancial = () => {
+    if (!financialData) return;
+    const rows = [{
+      'Total Sales': financialData.summary.total_sales,
+      [`Revenue (${localCode})`]: financialData.summary.total_revenue,
+      [`Cost (${localCode})`]: financialData.summary.total_cost,
+      [`Profit (${localCode})`]: financialData.summary.total_profit,
+      'Paid': financialData.summary.paid_count,
+      'Pending': financialData.summary.pending_count,
+    }];
+    exportToExcel(rows, 'Financial_Summary');
   };
 
-  const formatMoneyUSD = (amount) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(amount || 0);
+  const handleExportInventory = () => {
+    if (!inventoryData) return;
+    const rows = (inventoryData.vehicles || []).map(v => ({
+      Make: v.make, Model: v.model, Year: v.year, Chassis: v.chassis_number,
+      Color: v.color, Status: v.status, Condition: v.condition,
+      [`Cost (${importCode})`]: v.purchase_price_usd, Mileage: v.mileage,
+    }));
+    exportToExcel(rows, 'Inventory_Report');
+  };
+
+  const handleExportOrders = () => {
+    if (!ordersData) return;
+    const rows = (ordersData.orders || []).map(o => ({
+      'Order Ref': o.order_reference, Status: o.status,
+      [`Total Cost (${importCode})`]: o.total_cost_usd,
+      'Vehicles': o.vehicle_count, Date: o.created_at,
+    }));
+    exportToExcel(rows, 'Import_Orders_Report');
   };
 
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Reports & Analytics</h1>
-        <p className="text-gray-600 mt-1">
-          {user?.role === 'bond_manager' 
-            ? 'View your bond\'s performance reports' 
+      <div className="mb-8 flex justify-between items-start">
+        <div>
+          <h1 className="text-3xl font-bold">Reports & Analytics</h1>
+          <p className="text-gray-600 mt-1">
+            {user?.role === 'bond_manager' 
+              ? 'View your bond\'s performance reports' 
             : 'View comprehensive business reports'}
-        </p>
+          </p>
+        </div>
+        <div className="flex gap-2 print:hidden">
+          <button
+            onClick={() => {
+              if (activeTab === 'financial') handleExportFinancial();
+              else if (activeTab === 'inventory') handleExportInventory();
+              else if (activeTab === 'orders') handleExportOrders();
+            }}
+            className="flex items-center gap-2 border border-gray-300 px-4 py-2 rounded-lg text-sm hover:bg-gray-50"
+          >
+            <Download size={15} /> Export Excel
+          </button>
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-2 border border-gray-300 px-4 py-2 rounded-lg text-sm hover:bg-gray-50"
+          >
+            🖨️ Print / Save PDF
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 border-b">
@@ -176,7 +222,7 @@ export default function Reports() {
                     <tr>
                       <th className="px-4 py-2 text-left">Status</th>
                       <th className="px-4 py-2 text-right">Count</th>
-                      <th className="px-4 py-2 text-right">Total Value (USD)</th>
+                      <th className="px-4 py-2 text-right">Total Value ({importCode})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -198,7 +244,7 @@ export default function Reports() {
                     <tr>
                       <th className="px-4 py-2 text-left">Make</th>
                       <th className="px-4 py-2 text-right">Count</th>
-                      <th className="px-4 py-2 text-right">Avg Price (USD)</th>
+                      <th className="px-4 py-2 text-right">Avg Price ({importCode})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -224,7 +270,7 @@ export default function Reports() {
                     <tr>
                       <th className="px-4 py-2 text-left">Status</th>
                       <th className="px-4 py-2 text-right">Count</th>
-                      <th className="px-4 py-2 text-right">Total Value (USD)</th>
+                      <th className="px-4 py-2 text-right">Total Value ({importCode})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -247,7 +293,7 @@ export default function Reports() {
                       <th className="px-4 py-2 text-left">Bond Name</th>
                       <th className="px-4 py-2 text-left">Country</th>
                       <th className="px-4 py-2 text-right">Order Count</th>
-                      <th className="px-4 py-2 text-right">Total Value (USD)</th>
+                      <th className="px-4 py-2 text-right">Total Value ({importCode})</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">

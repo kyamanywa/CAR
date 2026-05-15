@@ -88,7 +88,7 @@ export default function Orders() {
     setSelectedVehicles([]);
     if (bondId) {
       try {
-        const res = await getForeignBondVehicles(bondId, { status: 'Available' });
+        const res = await getForeignBondVehicles(bondId, { orderable: 'true' });
         setBondVehicles(res.data.data);
       } catch (error) {
         console.error('Error loading vehicles:', error);
@@ -154,7 +154,7 @@ export default function Orders() {
         .filter(v => selectedVehicles.includes(v.id))
         .reduce((sum, v) => {
           const qty = vehicleQuantities[v.id] || 1;
-          return sum + (parseFloat(v.sale_price) || 0) * qty;
+          return sum + (parseFloat(v.sale_price_usd) || parseFloat(v.sale_price) || 0) * qty;
         }, 0);
       
       // Count total units
@@ -189,7 +189,7 @@ export default function Orders() {
     setShowEditModal(true);
     
     try {
-      const res = await getForeignBondVehicles(order.foreign_bond_id, { status: 'Available' });
+      const res = await getForeignBondVehicles(order.foreign_bond_id, { orderable: 'true' });
       setBondVehicles(res.data.data);
       
       // Get current order details
@@ -221,7 +221,7 @@ export default function Orders() {
         .filter(v => selectedVehicles.includes(v.id))
         .reduce((sum, v) => {
           const qty = vehicleQuantities[v.id] || 1;
-          return sum + (parseFloat(v.sale_price) || 0) * qty;
+          return sum + (parseFloat(v.sale_price_usd) || parseFloat(v.sale_price) || 0) * qty;
         }, 0);
       
       const totalUnits = Object.values(vehicleQuantities).reduce((sum, qty) => sum + qty, 0);
@@ -392,9 +392,12 @@ export default function Orders() {
                       const isComplete = idx <= currentIdx;
                       return (
                         <div key={step.status} className="flex flex-col items-center">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                            isComplete ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-400'
-                          }`}>
+                          <div
+                            className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                              isComplete ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-400'
+                            }`}
+                            title={step.label}
+                          >
                             <step.icon className="w-5 h-5" />
                           </div>
                           <p className={`text-xs mt-1 ${isComplete ? 'text-green-600' : 'text-gray-400'}`}>
@@ -403,6 +406,10 @@ export default function Orders() {
                         </div>
                       );
                     })}
+                  </div>
+
+                  <div className="text-center text-sm text-blue-700 bg-blue-50 border border-blue-100 rounded-lg p-3">
+                    Order status is updated by supplier only.
                   </div>
 
                   {/* Order Info */}
@@ -618,7 +625,7 @@ export default function Orders() {
                                           {expandedModels[modelKey] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                           <span className="font-semibold">{model}</span>
                                           <span className="text-sm text-gray-600">
-                                            ({vehicles.length} units available)
+                                            ({vehicles.reduce((s,v) => s + (v.quantity||1), 0)} units in stock)
                                           </span>
                                         </div>
                                         <span className="text-sm font-semibold text-blue-600">
@@ -657,11 +664,9 @@ export default function Orders() {
                                                     <p className="text-xs text-gray-500 font-mono mt-1">
                                                       {vehicle.chassis_number}
                                                     </p>
-                                                    {vehicle.quantity > 1 && (
-                                                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded mt-1 inline-block">
-                                                        Available: {vehicle.quantity} units
-                                                      </span>
-                                                    )}
+                                                    <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded mt-1 inline-block">
+                                                      In Stock: {vehicle.quantity || 1} units
+                                                    </span>
                                                   </div>
                                                 </div>
                                                 <div className="text-right ml-4">
@@ -844,7 +849,7 @@ export default function Orders() {
                                           {expandedModels[modelKey] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                                           <span className="font-semibold">{model}</span>
                                           <span className="text-sm text-gray-600">
-                                            ({vehicles.length} units available)
+                                            ({vehicles.reduce((s,v) => s + (v.quantity||1), 0)} units in stock)
                                           </span>
                                         </div>
                                         <span className="text-sm font-semibold text-blue-600">
@@ -883,6 +888,9 @@ export default function Orders() {
                                                     <p className="text-xs text-gray-500 font-mono mt-1">
                                                       {vehicle.chassis_number}
                                                     </p>
+                                                    <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded mt-1 inline-block">
+                                                      In Stock: {vehicle.quantity || 1} units
+                                                    </span>
                                                   </div>
                                                 </div>
                                                 <div className="text-right ml-4">

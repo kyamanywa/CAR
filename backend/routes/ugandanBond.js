@@ -80,7 +80,7 @@ router.get('/:id/orders', auth, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT io.*, fb.name as foreign_bond_name, fb.country as origin_country,
-        (SELECT COUNT(*) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count
+        (SELECT COALESCE(SUM(ov.quantity), 0) FROM order_vehicles ov WHERE ov.order_id = io.id) as vehicle_count
       FROM import_orders io
       JOIN foreign_bonds fb ON io.foreign_bond_id = fb.id
       WHERE io.ugandan_bond_id = $1
@@ -104,6 +104,26 @@ router.get('/:id/dashboard', auth, async (req, res) => {
         SUM(CASE WHEN status = 'At Border' THEN 1 ELSE 0 END) as at_border,
         SUM(CASE WHEN status = 'Sold' THEN 1 ELSE 0 END) as sold
       FROM vehicles WHERE ugandan_bond_id = $1
+    `, [bondId]);
+
+    // Imported inventory value: vehicles linked via ugandan_bond_id (source_type = import)
+    const importedValue = db.query(`
+      SELECT
+        COUNT(*) as total_units,
+        COALESCE(SUM(CASE WHEN status != 'Sold' THEN purchase_price_usd ELSE 0 END), 0) as stock_value_usd,
+        COALESCE(SUM(CASE WHEN status != 'Sold' THEN selling_price_ugx ELSE 0 END), 0) as asking_value_ugx
+      FROM vehicles WHERE ugandan_bond_id = $1
+    `, [bondId]);
+
+    // Local inventory value: vehicles belonging to this dealership (source_type != import)
+    const localValue = db.query(`
+      SELECT
+        COUNT(*) as total_units,
+        COALESCE(SUM(CASE WHEN status != 'Sold' THEN acquisition_cost_ugx ELSE 0 END), 0) as cost_value_ugx,
+        COALESCE(SUM(CASE WHEN status != 'Sold' THEN sale_price_ugx ELSE 0 END), 0) as asking_value_ugx
+      FROM vehicles
+      WHERE dealership_id = (SELECT id FROM dealerships WHERE ugandan_bond_id = $1 LIMIT 1)
+        AND source_type != 'import'
     `, [bondId]);
     
     const orders = db.query(`
@@ -132,6 +152,8 @@ router.get('/:id/dashboard', auth, async (req, res) => {
     res.json({
       data: {
         inventory: inventory.rows[0],
+        imported_value: importedValue.rows[0],
+        local_value: localValue.rows[0],
         orders: orders.rows[0],
         sales: sales.rows[0],
         pipeline: pipeline.rows

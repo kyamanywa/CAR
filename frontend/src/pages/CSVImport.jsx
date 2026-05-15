@@ -30,7 +30,7 @@ export default function CSVImport() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch('http://localhost:3000/api/csv/import', {
+      const response = await fetch('/api/csv/import', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -68,7 +68,7 @@ export default function CSVImport() {
 
   const downloadTemplate = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/csv/template', {
+      const response = await fetch('/api/csv/template', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
